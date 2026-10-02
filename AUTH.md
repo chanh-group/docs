@@ -102,7 +102,7 @@ Client                       Server                            Redis            
   │ { email }                  │── find_by_email ── DB          │                │
   │                            │   đã tồn tại → 409             │                │
   │                            │── generate OTP ───────────────►│ otp:{email} (2')
-  │                            │── publish mail.otp ───────────────────────────►│ (async)
+  │                            │── enqueue MailQueue ─────────────────────────►│ (async)
   │◄── 200 "Đã gửi OTP" ──────│                                │                │
   │                            │                                │                │
   │ POST /auth/signup          │                                │                │
@@ -136,7 +136,7 @@ Server-side (theo thứ tự):
 2. `find_by_email` — đã tồn tại → `409 USER_ALREADY_EXISTS`.
 3. `generate_otp()` (CSPRNG 6 chữ số) → `SET otp:{email} = { code, attempts: 0 } EX 120`
    (ghi Redis **fail-closed** — Redis lỗi → 503, không gửi mail giả).
-4. Publish NATS `mail.otp` (async fire-and-forget — mail fail **không** fail request).
+4. Enqueue mail vào `MailQueue` (`p-queue` in-process — async fire-and-forget, mail fail **không** fail request).
 
 > Email lowercase khi build key: `otp:lemon@gmail.com`.
 
@@ -332,7 +332,7 @@ Client                        Server                           Redis           S
   │ { email }                  │── find_by_email ── DB        │                │
   │                            │   không thấy → vẫn 200 (*)   │                │
   │                            │── SET forgot_otp:{email} ────►│ (2')           │
-  │                            │── publish mail.otp ─────────────────────────►│
+  │                            │── enqueue MailQueue ─────────────────────────►│
   │◄── 200 "Đã gửi OTP" ──────│                                │                │
   │                            │                                │                │
   │ POST /auth/forgot-password/reset                          │                │
@@ -361,7 +361,7 @@ Server-side:
 1. Rate-limit: 3/IP/60s + 3/email/giờ → `429`.
 2. `find_by_email` — **không thấy → vẫn `Ok`** (anti-enumeration: không lộ email nào đã đăng ký).
 3. Thấy user: `generate_otp` → `SET forgot_otp:{email} = { code, attempts: 0 } EX 120` (fail-closed)
-   → publish `mail.otp`.
+   → enqueue mail vào `MailQueue`.
 4. Message trả về **giống hệt** nhau cả khi email không tồn tại (kể cả timing — vẫn chạy đủ các bước).
 
 ### 7.2 `POST /api/auth/forgot-password/reset`

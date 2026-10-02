@@ -76,15 +76,15 @@ Chuẩn response dùng chung: [RESPONSES.md](./RESPONSES.md) · Setup (Bun/confi
 | Cache/state | **Redis 7** (ioredis) | Token, OTP, presence, unread, rate-limit — **Redis-first** |
 | Realtime | **Socket.IO** + `@socket.io/redis-adapter` | Room per conversation/user, fan-out đa node |
 | Object storage | **S3 API** (MinIO local / S3 prod) | Presigned upload trực tiếp từ client |
-| Mail | **Nodemailer** (SMTP Gmail) + Handlebars | Gửi OTP, template multipart |
-| Queue/Jobs | **NATS JetStream** | Durable job: mail, purge ephemeral, delayed job (presence-grace, call-timeout), push (sau) |
+| Mail | Nodemailer (SMTP, **I/O-bound** — `await` nhả event loop) + Handlebars | Gửi OTP, template multipart |
+| Mail queue | **`p-queue`** in-process (bounded, FIFO) | Tương đương `tokio::mpsc` — cùng event loop, không worker/NATS/microservice (xem §16) |
 | Call | **WebRTC 1:1** + coturn (STUN/TURN) | Signaling qua WS |
 | Mật khẩu | **argon2id** | OWASP defaults, output 32B |
 | JWT | HS256 qua **`jose`**, access 15' / refresh 7 ngày | Claims `{sub, type, jti}`; zero-dep, pin `algorithms: ['HS256']` |
 | Log/metric | `nestjs-pino` + `/metrics` Prometheus | request-id, latency histogram — setup [SETUP.md §3](./SETUP.md) |
 | Validate | `class-validator` + `zod` cho env config | Fail-fast boot — [SETUP.md §2](./SETUP.md) |
 | Toolchain | **Bun** (install/run/test — không npm) | `bun test` thay Jest — [SETUP.md §1](./SETUP.md) |
-| Test | `bun test` + Testcontainers (pg/redis/minio/nats) | Integration thật |
+| Test | `bun test` + Testcontainers (pg/redis/minio) | Integration thật |
 
 ---
 
@@ -102,9 +102,8 @@ Client (web / mobile)
 └───┬──────────┬───────────┬──────────┬─────────┘
     │          │           │          │
     ▼          ▼           ▼          ▼
- Postgres    Redis      S3/MinIO    NATS (JetStream) ──► Worker
-    │          │                      │
-    │          │                      └── SMTP (Gmail)
+ Postgres    Redis      S3/MinIO   MailQueue (p-queue, in-process) ──► SMTP (Gmail)
+    │          │
     │          ├── token / session / OTP (fail-closed)
     │          ├── presence / typing / unread / cache (best-effort)
     │          └── rate-limit (fail-open)
@@ -501,8 +500,8 @@ rate-limit counters — **toàn bộ Redis** ([§6](#6-redis-data-model-redis-fi
 ### 7.1 Luồng đăng ký (2 bước)
 
 1. `POST /auth/request-otp` `{ email }` — check email chưa tồn tại (`409 USER_ALREADY_EXISTS`),
-   sinh OTP 6 số, lưu `otp:{email}` TTL **2 phút** (fail-closed), gửi mail qua NATS
-   `mail.otp` (async). Rate: 3/IP/60s + 3/email/giờ (anti inbox-bomb).
+   sinh OTP 6 số, lưu `otp:{email}` TTL **2 phút** (fail-closed), enqueue mail vào
+   `MailQueue` (p-queue in-process, async). Rate: 3/IP/60s + 3/email/giờ (anti inbox-bomb).
 2. `POST /auth/signup` `{ email, fullName, username, password, otp }` — validate (username
    `^[a-zA-Z0-9_]{3,30}$` lowercase, fullName 2–100, password ≥ 6 ký tự) → `OTP_CHECK` +
    **consume** → hash argon2id → INSERT user (`email_verified_at = now()`) → `201` + user DTO.
@@ -534,7 +533,7 @@ bình thường; quên mật khẩu → `POST /auth/forgot-password/otp` (luôn 
 ### 7.4 Quên mật khẩu `POST /auth/forgot-password/otp` → `POST /auth/forgot-password/reset`
 
 1. `forgot-password/otp` `{ email }` — luôn `200` kể cả email lạ (anti-enumeration); nếu có user
-   → lưu `forgot_otp:{email}` TTL 2 phút + gửi mail. Rate: 3/IP/60s + 3/email/giờ.
+   → lưu `forgot_otp:{email}` TTL 2 phút + enqueue mail vào `MailQueue`. Rate: 3/IP/60s + 3/email/giờ.
 2. `forgot-password/reset` `{ email, otp, newPassword }` — `OTP_CHECK` + consume → hash →
    UPDATE `password_hash` → **revoke toàn bộ session** (fail-closed) → `200`.
 
@@ -679,13 +678,13 @@ có tin mới chèn vào.
   (client) — server `PRESENCE_HEARTBEAT` (SETEX TTL 90s + ZADD `presence:online`).
 - **Grace period 60s:** khi WS disconnect mà `conns` về 0 → **không** set offline ngay
   (tránh nhấp nháy khi chuyển mạng/đổi Wi-Fi) — hẹn 60s sau mới `PRESENCE_OFFLINE`
-  (NATS JetStream delayed job `msg.nak(delay)` hoặc timer trong process, huỷ nếu reconnect).
+  (`setTimeout` trong process, lưu timer ref để **cancel khi reconnect** — tương đương delayed job).
 - **Offline** → ghi `users.last_seen_at` (bất đồng bộ, best-effort) → client hiển thị
   "lần cuối {từ đó}".
 - Query presence cho 1 danh sách userId: `MGET presence:{ids}` (list bạn bè nhỏ, không scan key).
 - Fan-out `presence:update` chỉ gửi tới **bạn bè** (không phát tán toàn server).
-- Multi-node: presence sống trong Redis (mọi node thấy chung); timer grace đặt trên NATS
-  (durable consumer) để không phụ thuộc node nào giữ kết nối.
+- Multi-node: presence sống trong Redis (mọi node thấy chung); timer grace là `setTimeout`
+  local — node chết thì Redis TTL tự rơi (tự offline), không cần durable job.
 
 ---
 
@@ -740,7 +739,7 @@ caller                     server                      callee
 | Bước | Chi tiết |
 |---|---|
 | `call:invite` | Tạo row `calls` (`INITIATED`→`RINGING`) + Redis `call:{id}` TTL 15'. Emit tới room `user:{callee}`. **Callee offline/busy** → trả `call:busy` → status `MISSED`. |
-| Ringing timeout 30s | Không accept → status `MISSED` (JetStream delayed job `jobs.call-timeout` 30s — idempotent nếu đã kết thúc trước). |
+| Ringing timeout 30s | Không accept → status `MISSED` (`setTimeout` 30s + timer ref, cancel khi accept/end — idempotent nếu đã kết thúc trước). |
 | `call:accept` | Update `ACCEPTED`, `answered_at=now()`. SDP offer/answer đi qua WS (payload chỉ là JSON SDP — không qua REST). |
 | `call:ice` | Trickle ICE candidate 2 chiều. |
 | `call:reject` / `call:cancel` | `REJECTED` (callee từ chối) / `CANCELLED` (caller hủy). |
@@ -807,8 +806,8 @@ src/
 │   ├── redis/            # ioredis: 1 conn lệnh + N conn pub/sub
 │   │   └── scripts/      # *.lua → EVALSHA (cache SHA)
 │   ├── storage/          # S3Client (aws-sdk v3), presigner, key builder
-│   ├── mailer/           # Nodemailer + Handlebars (consumer của `mail.*`)
-│   ├── nats/             # NATS/JetStream conn, producers, durable consumers, delayed-job helper
+│   ├── mailer/           # MailQueue (p-queue) + Nodemailer + Handlebars — consumer in-process
+│   ├── scheduler/        # @nestjs/schedule: cron purge 5', setTimeout delayed (presence-grace, call-timeout)
 │   ├── realtime/         # Socket.IO gateway + redis-adapter + handshake auth
 │   └── observability/    # nestjs-pino, request-id, /metrics, /health (SETUP.md §3–§4)
 ├── modules/
@@ -830,15 +829,15 @@ src/
 | Config | `fromEnv()` fail-fast khi boot (Zod schema — [SETUP.md §2](./SETUP.md)): `JWT_SECRET` ≥ 32 bytes bắt buộc; `SameSite=None` phải kèm `Secure`; production thiếu SMTP → **exit 1** (dev cho phép log-only) |
 | Redis | **1 connection manager** dùng chung cache + rate-limit; connection **riêng** cho subscriber (pub/sub không được chặn connection lệnh) |
 | Drizzle | Schema TS (`pgTable`) = entity; repository interface tách khỏi Drizzle impl (đổi ORM không sập domain); query phức tạp dùng `db.execute()` với tagged template `sql` |
-| NATS | JetStream stream `JOBS` (subjects `mail.>`, `jobs.>`); producer publish, worker consume durable consumer (ack/nak, `max_deliver=5`); delayed job = header `deliverAt` + `msg.nak(delay)` |
+| Mail queue | `p-queue` in-process (bounded 128, `concurrency: 1` = FIFO) — **tương đương `tokio::mpsc`**: `enqueue()` = `send()`, queue worker = consumer nhận từng mail. Backpressure: `queue.onSizeLessThan(128)` trước khi push (đúng semantics mpsc "send.await khi đầy"); tràn → drop + `warn` (mail là best-effort, không fail request). Gửi fail → retry 2 lần backoff 1s/5s rồi bỏ qua — **không có durable queue** (đúng lựa chọn: không microservice, không NATS/BullMQ) |
 | DTO ≠ entity | API DTO camelCase, không lộ `password_hash` / `deleted_at` |
 | Error | `BusinessError` (4xx, code ổn định i18n) vs `SystemError` (5xx; cache outage → **503**) — envelope theo [RESPONSES.md](./RESPONSES.md) |
-| Mail | Publish `mail.otp` rồi quên (fire-and-forget) — SMTP chậm không chặn request; worker gửi fail chỉ log + retry qua JetStream |
+| Mail | Service gọi `mailQueue.enqueue(...)` rồi quên (fire-and-forget) — SMTP chậm không chặn request |
 | Idempotency | Gửi tin dùng `clientMsgId` unique per (conv, sender) |
 | Upload | Presigned S3 — media không đi qua API ([§11](#11-file--media)) |
 | TURN | Credential HMAC tạm thời, secret chỉ ở server ([§12](#12-voicevideo-call-11-webrtc)) |
-| Shutdown | Dừng nhận kết nối mới → đóng WS (`server:shutdown`) → drain NATS consumers → close Drizzle pool/Redis |
-| Dev env | Docker Compose: `postgres · redis · minio · nats(-js) · coturn · api · worker` |
+| Shutdown | Dừng nhận kết nối mới → đóng WS (`server:shutdown`) → drain MailQueue (`onEmpty`) → close Drizzle pool/Redis |
+| Dev env | Docker Compose: `postgres · redis · minio · coturn · api` (1 process duy nhất) |
 
 **Drizzle schema ↔ DB:** schema định nghĩa TS-first (`drizzle-kit generate` sinh SQL migration).
 CHECK/trigger/partial index: Drizzle diễn đạt được index `.where()` / unique; CHECK constraint +
@@ -880,25 +879,38 @@ generate) — **SQL-first nên không bị giới hạn** như ORM schema-only. 
 
 ---
 
-## 16. Background jobs (NATS JetStream)
+## 16. Background jobs (in-process — không NATS, không worker riêng)
 
-Stream `JOBS` (retention: work-queue, `max_deliver=5`, ack wait 30s) với các subject/consumer:
+Không microservice: mọi job chạy **trong API process** bằng `@nestjs/schedule` + `p-queue` + `setTimeout`.
+Đánh đổi: job pending trong RAM bị mất khi process restart — chấp nhận được vì mỗi job đều
+tự chạy lại theo lịch hoặc có TTL tự rơi (bảng dưới).
 
-| Subject | Job | Tần suất / trigger | Việc làm |
+| Job | Cơ chế | Tần suất / trigger | Việc làm |
 |---|---|---|---|
-| `jobs.purge` | `purge-stories-notes` | mỗi 5 phút (scheduler tick → publish) | `DELETE … WHERE expires_at < now() RETURNING object_key` → xóa batch S3 |
-| `mail.otp` | `send-otp-mail` … | on-demand (publish khi signup/reset) | Gửi mail qua SMTP (mẫu: OTP signup/reset) |
-| `jobs.presence-grace` | `maybe-offline` | delayed 60s sau disconnect | Nếu `conns=0` → `PRESENCE_OFFLINE` + ghi `last_seen_at` |
-| `jobs.call-timeout` | `ringing-timeout` | delayed 30s sau invite | Nếu `call:{id}` còn `RINGING` → `MISSED` |
-| `jobs.push` (phase 2) | `fcm-push` | on-demand | Thông báo tin/call khi offline |
+| `purge-stories-notes` | `@Cron('*/5 * * * *')` + Redis lock `SET NX` 5s (leader = node nào giữ được lock) | mỗi 5 phút | `DELETE … WHERE expires_at < now() RETURNING object_key` → xóa batch S3 |
+| Mail (OTP…) | **`p-queue`** bounded 128, `concurrency: 1` (FIFO) | on-demand khi signup/reset | Gửi mail qua SMTP; fail → retry 2 lần (1s/5s) rồi bỏ |
+| `presence-grace` | `setTimeout` 60s, **lưu timer ref** | sau disconnect | Nếu `conns=0` → `PRESENCE_OFFLINE` + ghi `last_seen_at`; reconnect → `clearTimeout` |
+| `call-ringing-timeout` | `setTimeout` 30s, lưu timer ref | sau invite | Nếu `call:{id}` còn `RINGING` → `MISSED`; accept/end → `clearTimeout` |
+| `push` (phase 2) | cùng `p-queue` (subject khác) | on-demand | Thông báo tin/call khi offline |
 
-- **Delayed job** (JetStream không có delayed delivery gốc): message kèm header `deliverAt`;
-  consumer nhận sớm → `msg.nak(delayMs)` (NakDelay) để JetStream redeliver đúng hạn — idempotent
-  mọi handler (check lại trạng thái trước khi đổi).
-- **Scheduler** (`jobs.purge` mỗi 5 phút): worker tự tick bằng `setInterval` (leader bằng
-  Redis lock `SET NX` 5s để chỉ 1 node publish) → publish `jobs.purge`.
-- Worker chạy **process riêng** (`worker.ts`) — không chung event loop với API; durable consumer
-  per subject, backpressure bằng `max_ack_pending`.
+**`p-queue` không có worker riêng — chạy trên cùng event loop, và điều đó là ĐÚNG:**
+
+| Câu hỏi | Trả lời |
+|---|---|
+| `p-queue` có thread/worker riêng không? | **Không** — chỉ là promise queue trên cùng event loop. Consumer = 1 async task `await smtp.send()` |
+| Vậy có block request không? | **Không** — SMTP là **I/O-bound** (chờ network), `await` nhả event loop ngay. Giống hệt `tokio::mpsc`: consumer cũng chỉ là 1 async task trên cùng tokio runtime, **không** có OS thread riêng cho mail |
+| "NestJS chậm" thì sao? | Chậm là overhead per-request (DI/middleware/serialize) trên **CPU path**. Mail nằm ngoài CPU path: enqueue xong là response đi trước, SMTP chờ song song. Thêm 1 promise queue không cộng thêm độ trễ request |
+| Khi nào mới cần worker thật? | **CPU-bound**: probe media (ffprobe), transcode, encrypt file lớn → `worker_threads` (Bun hỗ trợ sẵn) hoặc `piscina` — tương đương `spawn_blocking`/`rayon`. Mail/OTP/purge/setTimeout **không** thuộc loại này |
+| Backlog đầy thì sao? | Bounded 128 + `onSizeLessThan` = backpressure kiểu `send().await`; tràn drop + `warn` — request vẫn không chờ SMTP |
+
+**Tại sao đủ dùng (không cần durable queue):**
+
+| Job | Mất khi restart thì sao |
+|---|---|
+| Mail | OTP chỉ sống 2 phút — user thấy không có mail → bấm gửi lại (rate-limit vẫn chặn spam) |
+| purge | Chạy lại sau ≤ 5 phút — story quá hạn thêm vài phút, không ai thấy (`expires_at > now()` filter sẵn) |
+| presence-grace | Redis TTL 90s tự rơi → user coi như offline; `last_seen_at` ghi trễ 1 nhịp, chấp nhận được |
+| call-timeout | Call kẹt `RINGING` trong DB → boot reconcile: `UPDATE calls SET status='MISSED' WHERE status='RINGING' AND started_at < now() - interval '2 min'` |
 
 ---
 
@@ -912,30 +924,30 @@ Chi tiết setup log + error trace: [SETUP.md §3–§4](./SETUP.md).
   log level: SystemError→`error`, BusinessError→`warn`, milestone→`info`.
 - **Metric** (`/metrics` Prometheus): `http_request_duration_seconds` (histogram),
   `ws_connections`, `ws_events_total{event}`, `redis_op_duration_seconds{op}`,
-  `nats_consumer_pending{consumer}`, `nats_msg_redelivered_total{subject}`,
+  `mail_queue_size` (độ đầy p-queue), `mail_sent_total{result}`,
   `messages_sent_total`, `calls_total{status}`,
   `otp_locked_total`, `refresh_stale_total` (cảnh báo replay).
 - **Health**: `/health/live` (process sống), `/health/ready` (Postgres `SELECT 1`, Redis `PING`,
-  NATS `PING`, S3 `HEAD bucket` — fail → 503, load balancer ngừng đưa traffic).
-- **Tracing**: `requestId` xuyên HTTP → service → NATS header → worker log; SystemError wrap
-  `cause` chain (không nuốt nguyên nhân gốc).
+  S3 `HEAD bucket` — fail → 503, load balancer ngừng đưa traffic).
+- **Tracing**: `requestId` xuyên HTTP → service → MailQueue job (kèm `requestId` trong payload) →
+  log khi gửi xong/fail; SystemError wrap `cause` chain (không nuốt nguyên nhân gốc).
 
 ### 17.2 Graceful shutdown
 
 1. SIGTERM → ngừng accept kết nối mới (HTTP + WS handshake).
 2. Gửi `server:shutdown` cho WS clients (client tự reconnect).
-3. Đợi in-flight request ≤ 10s → drain NATS consumers (un-ack msg về stream) → close Drizzle
-   pool → đóng Redis.
+3. Đợi in-flight request ≤ 10s → drain MailQueue (`queue.onEmpty()`, timeout 5s) → hủy mọi
+   `setTimeout` đang giữ ref → close Drizzle pool → đóng Redis.
 4. Process exit 0; quá timeout → exit 1.
 
 ### 17.3 Deploy & data
 
 | Thành phần | Ghi chú |
 |---|---|
-| Compose (dev) | `postgres:16, redis:7, minio, nats:2.10 (-js), coturn/coturn, api, worker` |
-| Prod | Container tách api/worker; Postgres managed (RDS/Cloud SQL) hoặc self-host + PITR; NATS JetStream file-store (3 node nếu HA) |
+| Compose (dev) | `postgres:16, redis:7, minio, coturn/coturn, api` |
+| Prod | Container `api` duy nhất; Postgres managed (RDS/Cloud SQL) hoặc self-host + PITR |
 | Redis | Prod bật **AOF everysec** — mất Redis = mất phiên đăng nhập/OTP (chấp nhận được, login lại); cache rebuild được |
-| NATS | JetStream file-store + replica `R=1` (dev) / `R=3` (prod) — mất stream = mất job pending (mail/purge tự chạy lại theo lịch) |
+| Mail queue | In-process (RAM) — restart giữa chừng thì mất mail chờ gửi; user bấm gửi lại OTP (rate-limit vẫn chặn spam) |
 | Backup | `pg_dump` mỗi ngày + WAL archiving; S3 versioning/lifecycle |
 | Scale ngang | API stateless + `socket.io-redis-adapter` → thêm node thoải mái; presence/unread ở Redis chung |
 | Sticky session | **Không cần** (adapter lo fan-out) |
@@ -947,7 +959,7 @@ Chi tiết setup log + error trace: [SETUP.md §3–§4](./SETUP.md).
 | Tầng | Tool | Trọng tâm |
 |---|---|---|
 | Unit | `bun test` (`bun:test`) | service thuần: username validate, direct_key, preview, state machine call |
-| Integration | Testcontainers (pg + redis + minio + nats) chạy dưới `bun test` | OTP atomic lock, refresh rotate/replay → revoke family, max 5 session, unread rebuild, purge 24h, friendship transitions, JetStream delayed job |
+| Integration | Testcontainers (pg + redis + minio) chạy dưới `bun test` | OTP atomic lock, refresh rotate/replay → revoke family, max 5 session, unread rebuild, purge 24h, friendship transitions, MailQueue FIFO + drain |
 | E2E | `supertest` + `socket.io-client` | đăng ký → verify OTP → login → kết bạn → gửi tin 2 chiều → presence → call signaling → story hết hạn |
 | Load (sau) | k6 / autocannon | WS fan-out, gửi tin, presence heartbeat |
 
@@ -960,7 +972,7 @@ Coverage cao cho: nhánh lỗi Redis (fail-closed vs fail-open), replay token, O
 
 | Phase | Nội dung | Exit criteria |
 |---|---|---|
-| **P0 — Nền** | Scaffold NestJS (Bun toolchain), config Zod fail-fast, Drizzle+schema §5, Redis infra §6 (Lua scripts), NATS JetStream (stream `JOBS` + worker skeleton), Docker Compose | migrate xanh, `/health/ready` pass, `bun test` unit Lua wrapper |
+| **P0 — Nền** | Scaffold NestJS (Bun toolchain), config Zod fail-fast, Drizzle+schema §5, Redis infra §6 (Lua scripts), MailQueue `p-queue` + `@nestjs/schedule`, Docker Compose | migrate xanh, `/health/ready` pass, `bun test` unit Lua wrapper |
 | **P1 — Auth** | Register (fullName+username+email), OTP, login identifier, refresh rotation, logout, đổi mật khẩu | e2e auth xanh; replay → family revoke có test |
 | **P2 — Bạn bè** | Search username, request/accept/reject/unfriend/block, auto DIRECT conversation | transition matrix test (mọi cặp status) |
 | **P3 — Chat** | Conversations, gửi/nhận text, timeline cursor, read/unread, WS realtime, typing | 2 client đổi tin realtime, reconnect sync đúng |
@@ -975,16 +987,16 @@ Coverage cao cho: nhánh lỗi Redis (fail-closed vs fail-open), replay token, O
 
 | # | Quyết định |
 |---|---|
-| 1 | Framework API: **NestJS**; ORM **Drizzle** (`drizzle-kit` migrate); Redis **ioredis**; jobs **NATS JetStream**; toolchain **Bun** (`bun test` làm test runner) |
+| 1 | Framework API: **NestJS**; ORM **Drizzle** (`drizzle-kit` migrate); Redis **ioredis**; mail queue **`p-queue`** in-process; toolchain **Bun** (`bun test` làm test runner) |
 | 2 | **Redis-first**: token, session, OTP, presence, unread, typing, ringing → Redis; DB là source of truth cho message/friend/call log |
 | 3 | Có **hệ thống bạn bè** (request/accept/reject/block/unfriend) — nguồn visibility cho presence/story/note |
 | 4 | Đăng ký gồm **email + mật khẩu + fullName + username**; username `^[a-z0-9_]{3,30}$`, **không ký tự đặc biệt**, unique, immutable |
 | 5 | Đăng nhập bằng **email hoặc username** (`identifier`) |
-| 6 | OTP xác thực email qua **SMTP** (async qua NATS `mail.otp`), TTL 5', max 5 lần sai, rate 3 email/giờ |
+| 6 | OTP xác thực email qua **SMTP** (async qua MailQueue `p-queue` in-process), TTL 2', max 5 lần sai, rate 3 email/giờ |
 | 7 | Access JWT 15' + refresh 7 ngày **rotate**, max 5 thiết bị, replay → revoke family |
 | 8 | Call **1:1 WebRTC**, signaling qua Socket.IO, coturn TURN, ring timeout 30s → MISSED |
 | 9 | File/media: **presigned S3** (MinIO local), server chỉ giữ metadata |
 | 10 | Story/Note **24h** hết hạn (`expires_at` + job purge 5 phút, xóa kèm object S3) |
 | 11 | **Không E2E** — TLS đủ; chưa group chat, push, "xóa phía mình" (schema mở sẵn cho tương lai) |
-| 12 | Background job: **NATS JetStream** (stream `JOBS`, durable consumer, delayed job qua `nak(delay)`) thay BullMQ |
+| 12 | **Không microservice**: job chạy in-process — mail qua `p-queue` (bounded FIFO ≈ `tokio::mpsc`, **cùng event loop**, SMTP I/O-bound nên không block request), cron `@nestjs/schedule`, delayed job `setTimeout` + timer ref. Không NATS/BullMQ/worker riêng; chỉ `worker_threads` cho CPU-bound (probe media…) |
 | 13 | Tài liệu này là thiết kế **LEMON CHAT** — đặt tại `docs_lemon_chat/LEMON_CHAT.md` |

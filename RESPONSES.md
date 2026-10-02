@@ -292,7 +292,7 @@ Phân loại lỗi (đồng bộ status mapping §4):
 | `SystemError::*` còn lại | DB, bug, … | **500** `INTERNAL_SERVER_ERROR` |
 | Validation pipe fail | class-validator | **422** `VALIDATION_ERROR` |
 
-Chi tiết error tracing (log shape, cause chain, requestId xuyên NATS): [SETUP.md §4](./SETUP.md).
+Chi tiết error tracing (log shape, cause chain, requestId xuyên MailQueue): [SETUP.md §4](./SETUP.md).
 
 ### 7.3 Quy ước bất di bất dịch
 
@@ -316,11 +316,13 @@ Chi tiết error tracing (log shape, cause chain, requestId xuyên NATS): [SETUP
 | Redis | `ioredis` (v6) | Đây chính là "package mạnh" của mảng Redis: Lua `defineCommand`, ConnectionManager auto-reconnect, pipeline. So với `node-redis` thì ioredis API Lua/script gọn hơn — giữ ioredis |
 | Redis cho NestJS | `@nestjs-modules/ioredis` (hoặc custom `RedisModule` 20 dòng) | Custom provider được khuyến nghị — ít magic, inject được connection riêng cho pub/sub. Lua: `defineCommand('otpCheck', { numberOfKeys, lua })` — type-safe, giữ SHA 1 lần |
 | Drizzle | `drizzle-orm` + `drizzle-kit` + `pg` | `drizzle(pool)` inject qua custom provider; migrate bằng `drizzle-kit migrate` |
-| NATS JetStream | `nats` (official) | API `js.consumers.get(...)` / `msg.ack()` / `msg.nak(delay)` đầy đủ; hoặc `nestjs-nats-jetstream` nếu muốn DI sẵn |
-| Mail | `@nestjs-modules/mailer` (Nodemailer + Handlebars adapter) | Hoặc Nodemailer thuần trong worker — đủ dùng nếu chỉ gửi OTP template |
+| Mail queue | **`p-queue`** (bounded 128, `concurrency: 1` = FIFO) | **Tương đương `tokio::mpsc`** — cùng event loop, **không worker riêng**: consumer `await smtp.send()` là I/O-bound, nhả loop ngay (giống async task trên tokio runtime). Backpressure `onSizeLessThan(128)`, fail retry 2 lần rồi bỏ |
+| CPU-bound work | `worker_threads` (Bun native) hoặc `piscina` | **Chỉ** khi cần: probe media, transcode, encrypt file lớn — tương đương `spawn_blocking`/`rayon`. Mail/OTP/purge thì không cần |
+| Mail | `nodemailer` + `handlebars` | Gửi OTP template multipart (text+HTML); hoặc `@nestjs-modules/mailer` nếu muốn DI sẵn |
 | Socket.IO | `@nestjs/websockets` + `@nestjs/platform-socket.io` + `@socket.io/redis-adapter` | Official — gateway class y hệt controller |
 | i18n message | `nestjs-i18n` | Resolver theo `Accept-Language`, resource file `vi.json`/`en.json` — khớp §6 |
-| Health check | `@nestjs/terminus` | Gộp Postgres/Redis/NATS/S3 vào `/health/ready` |
+| Health check | `@nestjs/terminus` | Gộp Postgres/Redis/S3 vào `/health/ready` |
+| Cron/delayed job | `@nestjs/schedule` (`@Cron`, `@Timeout`) | Purge story 5 phút + delayed `setTimeout` (presence-grace 60s, call ringing 30s) — in-process, không cần queue |
 | Toolchain | **Bun** (thay npm/node cho install + run + test) | Bảng đổi lệnh + scripts mẫu: [SETUP.md §1](./SETUP.md) |
 | Test | **`bun test`** (`bun:test`) + `testcontainers` + `supertest` + `socket.io-client` | `bun add -d` để cài, `bun test` để chạy — chi tiết [SETUP.md §1](./SETUP.md), [LEMON_CHAT.md §18](./LEMON_CHAT.md) |
 | Log | `nestjs-pino` | JSON log + request-id + redact — setup đầy đủ [SETUP.md §3](./SETUP.md) |

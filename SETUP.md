@@ -40,7 +40,6 @@ Dùng **Bun** cho toàn bộ: package manager, runtime, test runner, script runn
     "dev": "bun --watch src/main.ts",
     "build": "bun build ./src/main.ts --outdir dist --target node",
     "start": "bun run dist/main.js",
-    "start:worker": "bun run src/worker.ts",
     "test": "bun test",
     "test:watch": "bun test --watch",
     "typecheck": "tsc --noEmit",
@@ -56,6 +55,7 @@ Dùng **Bun** cho toàn bộ: package manager, runtime, test runner, script runn
 | Chủ điểm | Ghi chú |
 |---|---|
 | Runtime | Bun chạy được NestJS với cả Express lẫn Fastify adapter — mặc định giữ Express adapter cho đỡ lệch package (`cookie-parser`…); Fastify thì dùng `@fastify/cookie` |
+| Event loop & worker | Mail queue (`p-queue`) chạy **cùng event loop** — ổn vì SMTP là I/O `await` (không block). Việc **CPU-bound** (probe media/transcode/encrypt lớn) mới tách `worker_threads` (Bun native) hoặc `piscina` — đừng tách thread cho I/O, thừa complexity không lợi |
 | Native module | `argon2` có prebuilt binary — `bun install` là xong; nếu rơi vào env lạ thì `bun rebuild argon2` |
 | Test | `bun test` (import `{ describe, it, expect }` từ `bun:test`) — API quen thuộc, **không** cần Jest config. Testcontainers/supertest/socket.io-client chạy bình thường dưới `bun test` |
 | ESM/CJS | Bun nuốt được cả hai — `jose` v6 ESM-only không còn là vấn đề với Bun runtime (chỉ còn vấn đề khi build bằng `tsc` ra CJS cho Node thuần; đã bọc `JwtService` wrapper như [RESPONSES.md §7.4](./RESPONSES.md)) |
@@ -99,9 +99,6 @@ export const envSchema = z
     // Redis
     REDIS_URL: z.string().url(),
     REDIS_CONNECTION_TIMEOUT: z.coerce.number().int().positive().default(5000),
-
-    // NATS
-    NATS_URL: z.string().url(),
 
     // JWT — bắt buộc ≥ 32 bytes, fail-closed
     JWT_SECRET: z.string().min(32, 'JWT_SECRET must be at least 32 bytes'),
@@ -292,10 +289,10 @@ export class ObservabilityModule {}
 | Level | Dùng cho | Ví dụ |
 |---|---|---|
 | `fatal` | Process sắp chết (không recover được) | Boot config sai đã exit, mất invariant nội bộ |
-| `error` | **SystemError** — bug/dependency chết, cần nhìn | DB query fail, Redis 503, NATS mất kết nối, unhandled |
+| `error` | **SystemError** — bug/dependency chết, cần nhìn | DB query fail, Redis 503, unhandled |
 | `warn` | **BusinessError** — hành vi bất thường nhưng hệ thống sống | Login sai, OTP sai, replay refresh (`refresh_stale`), rate-limit dính |
 | `info` | Milestone nghiệp vụ quan trọng | `user.signed_up`, `user.signed_in`, `password.changed`, boot xong |
-| `debug` | Chi tiết triển khai | WS event từng cái, NATS msg nhận/ack, cache hit/miss |
+| `debug` | Chi tiết triển khai | WS event từng cái, MailQueue enqueue/sent, cache hit/miss |
 | `trace` | Gần raw (ít dùng) | Timing từng bước I/O khi profile |
 
 **Cấm:** `console.log`/`println` trong production code — luôn inject `Logger` từ NestJS
@@ -323,9 +320,9 @@ Mọi dòng log JSON có **requestId** (child logger) để nối chuỗi:
 |---|---|
 | `msg` | Event name dạng `domain.action` (`user.signed_up`, `otp.locked`) — **không** viết câu tùy tiện, để group/aggregation được |
 | Context | Tên class service/gateway/filter — NestJS `Logger(Class.name)` tự gắn |
-| requestId | 1 request = 1 id xuyên suốt HTTP + service + NATS publish (đóng vào message header `x-request-id`) |
+| requestId | 1 request = 1 id xuyên suốt HTTP + service + MailQueue job (kèm `requestId` trong job payload) |
 | WS | Gateway log `debug` từng event; `info` chỉ milestone (`call.ended`); mọi dòng kèm `socketId` + `userId` |
-| NATS consumer | Mọi dòng log kèm `subject`, `msgId`, `deliveryCount` — retry trace được |
+| MailQueue job | Kèm `requestId` + `jobId` trong payload — log khi enqueue/sent/fail **có requestId cũ** → truy vết từ user report → 1 chuỗi HTTP → queue → SMTP |
 | Mask | Email mask `l***n@gmail.com`; **không** log password/OTP/token/secret bao giờ (đã `redact` tự động, nhưng cũng đừng tự tay `logger.info({ otp })`) |
 
 ---
@@ -409,14 +406,16 @@ export class RedisOpError extends Error {
 // throw new Error('something failed');
 ```
 
-### 4.3 Trace xuyên service → NATS → worker
+### 4.3 Trace xuyên service → MailQueue (in-process)
+
+Không có service nào khác — mail queue chạy trong cùng process (p-queue), nên trace rất gọn:
 
 | Bước | Cơ chế |
 |---|---|
 | HTTP request | `genReqId` (§3.1) — mọi log trong request là child logger với `requestId` |
 | Service nội bộ | `logger.log`/`error` của NestJS context — tự kèm context class; truyền `requestId` qua service call khi khác boundary |
-| Publish NATS | Đóng header `x-request-id: <reqId>` + `Nats-Msg-Id` (idempotency) vào message |
-| Worker consume | Đọc `msg.headers['x-request-id']` → child logger → log retry/ack/fail **có requestId cũ** → truy vết từ user report → 1 chuỗi HTTP → queue → worker |
+| Enqueue mail | Đóng `requestId` + `jobId` vào job payload trước khi `mailQueue.enqueue()` |
+| MailQueue consumer | Trong cùng process — đọc `requestId` từ job payload → child logger → log sent/fail **có requestId cũ** → truy vết từ user report → 1 chuỗi HTTP → queue → SMTP |
 | WS event | `socket.handshake.auth.requestId` hoặc sinh mới khi connect; log kèm `socketId` |
 | Error không bắt được | `process.on('unhandledRejection'|'uncaughtException')` → `logger.fatal` + graceful shutdown (§[LEMON_CHAT.md 17.2](./LEMON_CHAT.md)) |
 
@@ -428,9 +427,8 @@ export class RedisOpError extends Error {
 | Redis | cache read (best-effort) | đi tiếp vào DB | `warn` `cache.fallback` — không spam (sample 1%) |
 | Redis | rate-limit (fail-open) | cho qua request | `warn` `ratelimit.degraded` |
 | Postgres | mọi query | `500 INTERNAL_SERVER_ERROR` | `error` + stack + cause |
-| NATS | publish job | không fail request (fire-and-forget) | `error` `nats.publish_failed` |
 | S3 | presign/upload verify | `500`/`PRESIGN_FAILED` | `error` + stack |
-| SMTP | gửi mail | không fail request (qua NATS) | `warn` trong worker, retry qua JetStream `max_deliver` |
+| SMTP | gửi mail (qua MailQueue) | không fail request (fire-and-forget) | `warn` `mail.send_failed`, retry 2 lần (1s/5s) trong queue |
 
 ### 4.5 Alert metric (từ log/metric — [LEMON_CHAT.md §17.1](./LEMON_CHAT.md))
 
@@ -439,7 +437,7 @@ export class RedisOpError extends Error {
 | `refresh_stale_total` tăng | **có thể replay token** | Điều tra ngay (an ninh) |
 | `otp_locked_total` tăng | brute-force OTP diện rộng | Xem IP nguồn, siết rate-limit |
 | `5xx rate` tăng | bug hoặc dependency chết | Xem log `error` theo `requestId` cluster |
-| `nats_msg_redelivered_total` tăng | worker fail liên tục | Xem `deliveryCount` trong log consumer |
+| `mail_queue_size` chạm trần (128) | SMTP nghẽn, mail drop | Xem log `mail.send_failed`, kiểm tra SMTP |
 | `redis_op_duration_seconds` p99 cao | Redis nghẽn | Kiểm tra AOF/replica, slow log |
 
 ---
@@ -454,7 +452,7 @@ export class RedisOpError extends Error {
 - [ ] Log JSON qua `nestjs-pino`; `genReqId` + echo `x-request-id`
 - [ ] `redact` đủ password/otp/token/cookie/secret
 - [ ] Log level đúng quy tắc: System→`error`, Business→`warn`, milestone→`info`, chi tiết→`debug`
-- [ ] `msg` dạng `domain.action`; mọi dòng có `requestId` (kể cả NATS worker — lấy từ message header)
+- [ ] `msg` dạng `domain.action`; mọi dòng có `requestId` (kể cả MailQueue job — lấy từ job payload)
 - [ ] `SystemError` wrap `cause` — không nuốt nguyên nhân gốc
 - [ ] `ErrorFilter` log Business=`warn` (không stack), System=`error` (đủ stack + cause)
 - [ ] Health: `/health/live` + `/health/ready` không auto-log (giảm nhiễu)
