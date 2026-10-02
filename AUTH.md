@@ -2,6 +2,7 @@
 
 > Luồng xác thực chi tiết của LEMON CHAT, state **Redis-first** (OTP, session, refresh rotation).
 > Chuẩn body success/error dùng chung: [RESPONSES.md](./RESPONSES.md) · Tổng quan hệ thống: [LEMON_CHAT.md](./LEMON_CHAT.md)
+> · Config/logging/error trace: [SETUP.md](./SETUP.md)
 >
 > Mọi endpoint dưới prefix `/api/auth` (trừ `change-password` đặt tại `/api/users/me/password` theo
 > chuẩn REST "đổi mật khẩu của chính mình"). Body/response theo envelope [RESPONSES.md](./RESPONSES.md);
@@ -32,8 +33,8 @@ Auth **không lưu token/OTP trong DB** — mọi state tạm sống ở Redis:
 
 | Key | Value | TTL | Ghi chú |
 |---|---|---|---|
-| `otp:signup:{email}` | `{ code, attempts }` | **5 phút** | OTP đăng ký, namespace riêng |
-| `otp:reset:{email}` | `{ code, attempts }` | **5 phút** | OTP quên mật khẩu, namespace riêng |
+| `otp:{email}` | `{ code, attempts }` | **2 phút** | OTP đăng ký (prefix `otp:`) |
+| `forgot_otp:{email}` | `{ code, attempts }` | **2 phút** | OTP quên mật khẩu, namespace riêng |
 | `refreshToken:{jti}` | `userId` | 7 ngày | 1 refresh token = 1 session |
 | `sessions:{userId}` | JSON `[jti, …]` — max **5** | 7 ngày (KEEPTTL khi rewrite) | Danh sách phiên của user |
 | `user:{id}` | UserDTO JSON | 60s | Profile cache (best-effort) |
@@ -51,12 +52,13 @@ Auth **không lưu token/OTP trong DB** — mọi state tạm sống ở Redis:
 
 | Hằng số | Giá trị |
 |---|---|
-| `OTP_EXPIRATION` | 300s (5 phút) |
+| `OTP_EXPIRATION` | 120s (2 phút) |
 | `OTP_LENGTH` | 6 chữ số (`CSPRNG`, `100000..1000000`) |
 | `MAX_OTP_ATTEMPTS` | 5 — sai quá → **hủy mã**, bắt xin lại |
 | `ACCESS_TOKEN_EXPIRATION` | 15 phút |
 | `REFRESH_TOKEN_EXPIRATION` | 7 ngày |
 | `MAX_SESSIONS_PER_USER` | 5 — login thiết bị thứ 6 **kick phiên cũ nhất** |
+| Password policy | tối thiểu **6 ký tự** |
 
 **Lua scripts** (atomic 1 round-trip) — xem [LEMON_CHAT.md §6.1](./LEMON_CHAT.md):
 `OTP_CHECK` (so khớp + đếm attempts KEEPTTL), `CREATE_SESSION` (append + evict cũ nhất),
@@ -81,7 +83,8 @@ Auth **không lưu token/OTP trong DB** — mọi state tạm sống ở Redis:
 | Access | Body JSON (`data.accessToken`) | Client giữ **trong memory** (web) / secure storage (mobile) — không localStorage, không URL |
 | Refresh | Cookie HttpOnly `refreshCookie` (web) / secure storage (mobile) | `Path=/`, `SameSite=Strict` (mặc định), `Secure` theo env; **không** đặt trong body |
 
-- Validate JWT: pin `HS256` (anti algorithm-confusion), `leeway=30s`, bắt buộc `exp/iss/aud`.
+- Validate JWT bằng `jose` (`jwtVerify`, pin `algorithms: ['HS256']` — anti algorithm-confusion),
+  `leeway=30s`, bắt buộc `exp/iss/aud`.
 - **"Ký trước, xoay sau":** ký cặp mới → rồi mới rotate Redis. Rotate lỗi (503) thì phiên cũ
   còn nguyên, client retry được — token đã ký mà chưa lưu session thì **không** trả client.
 - **Replay → revoke family:** `ROTATE_REFRESH` trả `Stale` (token đã rotate/thu hồi mà còn dùng)
@@ -98,7 +101,7 @@ Client                       Server                            Redis            
   │ POST /auth/request-otp     │                                │                │
   │ { email }                  │── find_by_email ── DB          │                │
   │                            │   đã tồn tại → 409             │                │
-  │                            │── generate OTP ───────────────►│ otp:signup:{email} (5')
+  │                            │── generate OTP ───────────────►│ otp:{email} (2')
   │                            │── publish mail.otp ───────────────────────────►│ (async)
   │◄── 200 "Đã gửi OTP" ──────│                                │                │
   │                            │                                │                │
@@ -107,7 +110,7 @@ Client                       Server                            Redis            
   │   username, password, otp }│   sai/hết hạn → 400            │                │
   │                            │   sai 5 lần → DEL → 400        │                │
   │                            │── hash argon2id → INSERT users─┤ DB             │
-  │                            │── DEL otp:signup:{email} ─────►│                │
+  │                            │── DEL otp:{email} ─────►│                │
   │◄── 201 user ───────────────│                                │                │
 ```
 
@@ -131,11 +134,11 @@ Server-side (theo thứ tự):
 
 1. Rate-limit: 3/IP/60s + 3/email/giờ → vượt → `429 TOO_MANY_REQUESTS`.
 2. `find_by_email` — đã tồn tại → `409 USER_ALREADY_EXISTS`.
-3. `generate_otp()` (CSPRNG 6 chữ số) → `SET otp:signup:{email} = { code, attempts: 0 } EX 300`
+3. `generate_otp()` (CSPRNG 6 chữ số) → `SET otp:{email} = { code, attempts: 0 } EX 120`
    (ghi Redis **fail-closed** — Redis lỗi → 503, không gửi mail giả).
 4. Publish NATS `mail.otp` (async fire-and-forget — mail fail **không** fail request).
 
-> Email lowercase khi build key: `otp:signup:lemon@gmail.com`.
+> Email lowercase khi build key: `otp:lemon@gmail.com`.
 
 ### 3.2 `POST /api/auth/verify-otp` *(tùy chọn — FE kiểm tra sớm)*
 
@@ -169,7 +172,7 @@ Request:
   "email": "lemon@gmail.com",
   "fullName": "Nguyễn Văn Lemon",     // 2–100 ký tự
   "username": "lemon_van",            // ^[a-zA-Z0-9_]{3,30}$ → lowercase khi ghi
-  "password": "MatKhau#123",          // ≥ 8, có chữ + số
+  "password": "MatKhau#123",          // ≥ 6 ký tự
   "otp": "123456"
 }
 ```
@@ -196,8 +199,8 @@ Response `201` — `created(user, "Đăng ký thành công")`:
 Server-side:
 
 1. Validate body (class-validator): email, `fullName` 2–100, `username` regex
-   `^[a-zA-Z0-9_]{3,30}$`, password ≥ 8 có chữ+số, otp đúng 6 số.
-2. `OTP_CHECK otp:signup:{email}` với otp gửi kèm → sai/hết hạn/locked → `400 INVALID_OTP`.
+   `^[a-zA-Z0-9_]{3,30}$`, password ≥ 6 ký tự, otp đúng 6 số.
+2. `OTP_CHECK otp:{email}` với otp gửi kèm → sai/hết hạn/locked → `400 INVALID_OTP`.
    Đúng → **consume** (DEL key) — OTP dùng 1 lần.
 3. `hash_password` argon2id (OWASP defaults, output 32B) — **async**, không block runtime.
 4. `INSERT users` (`id` UUIDv7 app-sinh, `email_verified_at = now()`, `is_active = true`):
@@ -248,7 +251,7 @@ Response `200` — `withMessage({ accessToken }, "Đăng nhập thành công")` 
 
 Server-side:
 
-1. Rate-limit: 10/IP/60s + 5/identifier/15 phút (chống brute-force mật khẩu) → `429`.
+1. Rate-limit: 5/IP/60s → `429`.
 2. **Phân loại identifier:** chứa `@` → tra theo email (`LOWER(email)`), ngược lại → theo
    username (đã lowercase). 1 câu query: `WHERE (email = $1 OR username = $1) AND deleted_at IS NULL`.
 3. Không tìm thấy **hoặc** sai mật khẩu **hoặc** tài khoản OAuth không có password →
@@ -328,12 +331,12 @@ Client                        Server                           Redis           S
   │ POST /auth/forgot-password/otp                            │                │
   │ { email }                  │── find_by_email ── DB        │                │
   │                            │   không thấy → vẫn 200 (*)   │                │
-  │                            │── SET otp:reset:{email} ────►│ (5')           │
+  │                            │── SET forgot_otp:{email} ────►│ (2')           │
   │                            │── publish mail.otp ─────────────────────────►│
   │◄── 200 "Đã gửi OTP" ──────│                                │                │
   │                            │                                │                │
   │ POST /auth/forgot-password/reset                          │                │
-  │ { email, otp, newPassword }│── OTP_CHECK otp:reset ───────►│ match?         │
+  │ { email, otp, newPassword }│── OTP_CHECK forgot_otp ──────►│ match?         │
   │                            │── hash + UPDATE password_hash│ DB             │
   │                            │── revoke ALL sessions ───────►│                │
   │◄── 200 "Đã đặt lại mật khẩu"                              │                │
@@ -357,7 +360,7 @@ Server-side:
 
 1. Rate-limit: 3/IP/60s + 3/email/giờ → `429`.
 2. `find_by_email` — **không thấy → vẫn `Ok`** (anti-enumeration: không lộ email nào đã đăng ký).
-3. Thấy user: `generate_otp` → `SET otp:reset:{email} = { code, attempts: 0 } EX 300` (fail-closed)
+3. Thấy user: `generate_otp` → `SET forgot_otp:{email} = { code, attempts: 0 } EX 120` (fail-closed)
    → publish `mail.otp`.
 4. Message trả về **giống hệt** nhau cả khi email không tồn tại (kể cả timing — vẫn chạy đủ các bước).
 
@@ -378,13 +381,13 @@ Response `200` — `messageOnly("Đã đặt lại mật khẩu")`:
 Server-side:
 
 1. Rate-limit: 10/IP/60s.
-2. `OTP_CHECK otp:reset:{email}` với otp gửi kèm → sai/hết hạn/locked → `400 INVALID_OTP`;
+2. `OTP_CHECK forgot_otp:{email}` với otp gửi kèm → sai/hết hạn/locked → `400 INVALID_OTP`;
    đúng → **consume** (DEL key, dùng 1 lần).
 3. `find_by_email` → không thấy → `404 USER_NOT_FOUND`.
 4. `hash_password(newPassword)` → `UPDATE users SET password_hash`.
 5. **Revoke toàn bộ session** (fail-closed — không được báo thành công khi session cũ còn sống):
    - Đọc `sessions:{userId}` → `[jti, …]`
-   - `DELETE refreshToken:{jti1} … refreshToken:{jtiN} sessions:{userId} user:{userId} otp:reset:{email}`
+   - `DELETE refreshToken:{jti1} … refreshToken:{jtiN} sessions:{userId} user:{userId} forgot_otp:{email}`
 6. Trả 200 — client về trang đăng nhập.
 
 ---
@@ -410,7 +413,7 @@ Response `200` — `messageOnly("Đã đổi mật khẩu")`:
 Server-side:
 
 1. `AuthUser` từ middleware (`401 UNAUTHORIZED` nếu thiếu/sai access token).
-2. Rate-limit: 5/user/10 phút + 10/IP/10 phút → `429`.
+2. Rate-limit: 3/user/60s + 10/IP/60s → `429`.
 3. `find_by_id` → `404 USER_NOT_FOUND` (user đã bị xóa mềm giữa chừng).
 4. `verify_password(oldPassword, password_hash)` → sai → `400 INVALID_CREDENTIALS`
    (dùng chung code với đăng nhập — không xác nhận mật khẩu cũ có "đúng user" hay không).
@@ -431,13 +434,13 @@ Server-side:
 |---|---|---|---|---|---|
 | `POST` | `/api/auth/request-otp` | — | `{ email }` | — (messageOnly) | 3/IP/60s + 3/email/h |
 | `POST` | `/api/auth/verify-otp` | — | `{ email, otp, purpose }` | `true` | 10/IP/60s |
-| `POST` | `/api/auth/signup` | — | `{ email, fullName, username, password, otp }` | `UserResponse` (201) | 5/IP/h |
-| `POST` | `/api/auth/login` | — | `{ identifier, password }` | `{ accessToken }` + cookie | 10/IP/60s + 5/id/15' |
-| `POST` | `/api/auth/refresh` | cookie refresh | — | `{ accessToken }` + cookie mới | 30/IP/60s |
-| `POST` | `/api/auth/logout` | cookie refresh | — | — (messageOnly) | 30/IP/60s |
+| `POST` | `/api/auth/signup` | — | `{ email, fullName, username, password, otp }` | `UserResponse` (201) | — |
+| `POST` | `/api/auth/login` | — | `{ identifier, password }` | `{ accessToken }` + cookie | 5/IP/60s |
+| `POST` | `/api/auth/refresh` | cookie refresh | — | `{ accessToken }` + cookie mới | — |
+| `POST` | `/api/auth/logout` | cookie refresh | — | — (messageOnly) | — |
 | `POST` | `/api/auth/forgot-password/otp` | — | `{ email }` | — (messageOnly) | 3/IP/60s + 3/email/h |
-| `POST` | `/api/auth/forgot-password/reset` | — | `{ email, otp, newPassword }` | — (messageOnly) | 10/IP/60s |
-| `POST` | `/api/users/me/password` | Bearer access | `{ oldPassword, newPassword }` | — (messageOnly) | 5/user/10' + 10/IP/10' |
+| `POST` | `/api/auth/forgot-password/reset` | — | `{ email, otp, newPassword }` | — (messageOnly) | — |
+| `POST` | `/api/users/me/password` | Bearer access | `{ oldPassword, newPassword }` | — (messageOnly) | 3/user/60s + 10/IP/60s |
 
 ---
 
@@ -446,7 +449,7 @@ Server-side:
 | Chống | Cơ chế |
 |---|---|
 | Inbox-bomb (spam OTP vào 1 email) | 3 OTP/giờ/email — key `ratelimit:request-otp:email:{email}` |
-| Brute-force mật khẩu | 5 lần/15 phút/identifier — đếm theo identifier để không đổi IP là reset |
+| Brute-force mật khẩu | `signin` 5 lần/60s/IP |
 | Brute-force OTP | `MAX_OTP_ATTEMPTS = 5` atomic trong Lua, **KEEPTTL** khi sai — không kéo dài cửa sổ |
 | Dò email tồn tại | signup trả 409 khi trùng (chấp nhận leak 1 bit ở signup) nhưng **forgot-password luôn 200**; login luôn `INVALID_CREDENTIALS` |
 | Replay refresh token | `ROTATE_REFRESH` Stale → revoke family |
@@ -482,7 +485,7 @@ Chi tiết catalogue: [RESPONSES.md §5.1](./RESPONSES.md). Dùng cho auth:
 
 Trước khi ship auth, verify đủ:
 
-- [ ] OTP 2 namespace **độc lập** (`otp:signup:` / `otp:reset:`) — OTP signup không dùng được cho reset
+- [ ] OTP 2 namespace **độc lập** (`otp:` / `forgot_otp:`) — OTP signup không dùng được cho reset
 - [ ] OTP sai 5 lần → key bị **DEL** (phải xin lại, không dò tiếp)
 - [ ] OTP đúng → **consume** (không dùng lại được lần 2)
 - [ ] `ROTATE_REFRESH` atomic Lua; replay → **revoke family** (có test)
@@ -492,7 +495,7 @@ Trước khi ship auth, verify đủ:
 - [ ] Đổi/reset mật khẩu → **revoke-all** sessions, fail-closed
 - [ ] Max 5 session, kick cũ nhất
 - [ ] Cookie: `HttpOnly` + combo `SameSite`/`Secure` validate lúc boot
-- [ ] Password hash argon2id, không log password/OTP/token
+- [ ] Password hash argon2id (`bun add argon2`), không log password/OTP/token
 - [ ] Username `^[a-z0-9_]{3,30}$` enforce cả validate tầng API **và** CHECK constraint DB
 - [ ] Rate limit đủ bảng §10
 - [ ] Toàn bộ response theo envelope [RESPONSES.md](./RESPONSES.md)

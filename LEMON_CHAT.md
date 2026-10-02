@@ -8,7 +8,8 @@
 > Trạng thái tài liệu: **DESIGN** — chưa scaffold code. Stack API: **NestJS**.
 >
 > Tài liệu liên quan: [RESPONSES.md](./RESPONSES.md) (chuẩn body success/error dùng chung) ·
-> [AUTH.md](./AUTH.md) (luồng đăng ký/đăng nhập/quên mật khẩu/đổi mật khẩu chi tiết).
+> [AUTH.md](./AUTH.md) (luồng đăng ký/đăng nhập/quên mật khẩu/đổi mật khẩu chi tiết) ·
+> [SETUP.md](./SETUP.md) (Bun toolchain, config, logging, error tracing).
 
 ---
 
@@ -35,7 +36,7 @@
 19. [Roadmap](#19-roadmap)
 20. [Quyết định đã chốt](#20-quyết-đã-chốt)
 
-Chuẩn response dùng chung: [RESPONSES.md](./RESPONSES.md)
+Chuẩn response dùng chung: [RESPONSES.md](./RESPONSES.md) · Setup (Bun/config/logging/trace): [SETUP.md](./SETUP.md)
 
 ---
 
@@ -79,10 +80,11 @@ Chuẩn response dùng chung: [RESPONSES.md](./RESPONSES.md)
 | Queue/Jobs | **NATS JetStream** | Durable job: mail, purge ephemeral, delayed job (presence-grace, call-timeout), push (sau) |
 | Call | **WebRTC 1:1** + coturn (STUN/TURN) | Signaling qua WS |
 | Mật khẩu | **argon2id** | OWASP defaults, output 32B |
-| JWT | HS256, access 15' / refresh 7 ngày | Claims `{sub, type, jti}` |
-| Log/metric | nestjs-pino + `/metrics` Prometheus | request-id, latency histogram |
-| Validate | class-validator + Zod cho env config | Fail-fast boot |
-| Test | Jest + Testcontainers (pg/redis/minio/nats) | Integration thật |
+| JWT | HS256 qua **`jose`**, access 15' / refresh 7 ngày | Claims `{sub, type, jti}`; zero-dep, pin `algorithms: ['HS256']` |
+| Log/metric | `nestjs-pino` + `/metrics` Prometheus | request-id, latency histogram — setup [SETUP.md §3](./SETUP.md) |
+| Validate | `class-validator` + `zod` cho env config | Fail-fast boot — [SETUP.md §2](./SETUP.md) |
+| Toolchain | **Bun** (install/run/test — không npm) | `bun test` thay Jest — [SETUP.md §1](./SETUP.md) |
+| Test | `bun test` + Testcontainers (pg/redis/minio/nats) | Integration thật |
 
 ---
 
@@ -451,8 +453,8 @@ rate-limit counters — **toàn bộ Redis** ([§6](#6-redis-data-model-redis-fi
 |---|---|---|---|
 | `refreshToken:{jti}` | `userId` | 7 ngày | fail-closed |
 | `sessions:{userId}` | JSON `[jti, …]`, max **5** thiết bị | 7 ngày (KEEPTTL khi rewrite) | fail-closed |
-| `otp:signup:{email}` | `{code, attempts}` — OTP đăng ký | **5 phút** | fail-closed |
-| `otp:reset:{email}` | `{code, attempts}` — OTP quên mật khẩu | **5 phút** | fail-closed |
+| `otp:{email}` | `{code, attempts}` — OTP đăng ký | **2 phút** | fail-closed |
+| `forgot_otp:{email}` | `{code, attempts}` — OTP quên mật khẩu | **2 phút** | fail-closed |
 | `ratelimit:{action}:ip:{ip}` | counter | per-action | fail-open |
 | `ratelimit:{action}:email:{email}` | counter | 1 giờ | fail-open |
 | `ratelimit:{action}:user:{userId}` | counter | per-action | fail-open |
@@ -499,10 +501,10 @@ rate-limit counters — **toàn bộ Redis** ([§6](#6-redis-data-model-redis-fi
 ### 7.1 Luồng đăng ký (2 bước)
 
 1. `POST /auth/request-otp` `{ email }` — check email chưa tồn tại (`409 USER_ALREADY_EXISTS`),
-   sinh OTP 6 số, lưu `otp:signup:{email}` TTL **5 phút** (fail-closed), gửi mail qua NATS
+   sinh OTP 6 số, lưu `otp:{email}` TTL **2 phút** (fail-closed), gửi mail qua NATS
    `mail.otp` (async). Rate: 3/IP/60s + 3/email/giờ (anti inbox-bomb).
 2. `POST /auth/signup` `{ email, fullName, username, password, otp }` — validate (username
-   `^[a-zA-Z0-9_]{3,30}$` lowercase, fullName 2–100, password ≥ 8 có chữ+số) → `OTP_CHECK` +
+   `^[a-zA-Z0-9_]{3,30}$` lowercase, fullName 2–100, password ≥ 6 ký tự) → `OTP_CHECK` +
    **consume** → hash argon2id → INSERT user (`email_verified_at = now()`) → `201` + user DTO.
    Trùng email → `409 USER_ALREADY_EXISTS`; trùng username → `409 USERNAME_TAKEN`.
 
@@ -532,7 +534,7 @@ bình thường; quên mật khẩu → `POST /auth/forgot-password/otp` (luôn 
 ### 7.4 Quên mật khẩu `POST /auth/forgot-password/otp` → `POST /auth/forgot-password/reset`
 
 1. `forgot-password/otp` `{ email }` — luôn `200` kể cả email lạ (anti-enumeration); nếu có user
-   → lưu `otp:reset:{email}` TTL 5 phút + gửi mail. Rate: 3/IP/60s + 3/email/giờ.
+   → lưu `forgot_otp:{email}` TTL 2 phút + gửi mail. Rate: 3/IP/60s + 3/email/giờ.
 2. `forgot-password/reset` `{ email, otp, newPassword }` — `OTP_CHECK` + consume → hash →
    UPDATE `password_hash` → **revoke toàn bộ session** (fail-closed) → `200`.
 
@@ -799,7 +801,7 @@ secret ra client.
 ```
 src/
 ├── infra/
-│   ├── config/           # typed config + Zod validate, fail-fast boot
+│   ├── config/           # typed config + Zod validate, fail-fast boot (SETUP.md §2)
 │   ├── database/         # DrizzleService (pg.Pool), drizzle-kit migration runner
 │   │   └── schema/       # pgTable/pgEnum TS-first (users, friendships, conversations, …)
 │   ├── redis/            # ioredis: 1 conn lệnh + N conn pub/sub
@@ -808,7 +810,7 @@ src/
 │   ├── mailer/           # Nodemailer + Handlebars (consumer của `mail.*`)
 │   ├── nats/             # NATS/JetStream conn, producers, durable consumers, delayed-job helper
 │   ├── realtime/         # Socket.IO gateway + redis-adapter + handshake auth
-│   └── observability/    # pino, request-id, /metrics, /health
+│   └── observability/    # nestjs-pino, request-id, /metrics, /health (SETUP.md §3–§4)
 ├── modules/
 │   ├── auth/             # request-otp, verify-otp, signup, login (email|username), refresh, logout
 │   ├── users/            # profile, search username, đổi avatar/bio
@@ -825,7 +827,7 @@ src/
 
 | Quy ước | Nội dung |
 |---|---|
-| Config | `fromEnv()` fail-fast khi boot: `JWT_SECRET` ≥ 32 bytes bắt buộc; `SameSite=None` phải kèm `Secure`; production thiếu SMTP → **exit 1** (dev cho phép log-only) |
+| Config | `fromEnv()` fail-fast khi boot (Zod schema — [SETUP.md §2](./SETUP.md)): `JWT_SECRET` ≥ 32 bytes bắt buộc; `SameSite=None` phải kèm `Secure`; production thiếu SMTP → **exit 1** (dev cho phép log-only) |
 | Redis | **1 connection manager** dùng chung cache + rate-limit; connection **riêng** cho subscriber (pub/sub không được chặn connection lệnh) |
 | Drizzle | Schema TS (`pgTable`) = entity; repository interface tách khỏi Drizzle impl (đổi ORM không sập domain); query phức tạp dùng `db.execute()` với tagged template `sql` |
 | NATS | JetStream stream `JOBS` (subjects `mail.>`, `jobs.>`); producer publish, worker consume durable consumer (ack/nak, `max_deliver=5`); delayed job = header `deliverAt` + `msg.nak(delay)` |
@@ -855,8 +857,9 @@ generate) — **SQL-first nên không bị giới hạn** như ORM schema-only. 
 | `request-otp` IP | 3 / 60s |
 | `request-otp` email | 3 / giờ (anti inbox-bomb) |
 | `verify-otp` IP | 10 / 60s |
-| `login` IP | 10 / 60s |
-| `login` identifier | 5 / 15 phút (chống brute-force mật khẩu) |
+| `login` IP | 5 / 60s |
+| `change-password` user + IP | 3/user/60s + 10/IP/60s |
+| `forgot-password-otp` IP + email | 3/IP/60s + 3/email/giờ |
 | `signup` IP | 5 / giờ |
 | `send-message` user | 30 / phút |
 | `presign` user | 60 / giờ |
@@ -868,7 +871,7 @@ generate) — **SQL-first nên không bị giới hạn** như ORM schema-only. 
 - argon2id cho mật khẩu (OWASP defaults, output 32B).
 - JWT pin `HS256` (anti algorithm-confusion), `leeway=30s`, bắt buộc `exp/iss/aud`.
 - Refresh token: HttpOnly cookie (`SameSite=Strict` mặc định) trên web; mobile lưu secure storage.
-- Không log OTP/mật khẩu/token; mask email khi log.
+- Không log OTP/mật khẩu/token; mask email khi log (redact tự động — [SETUP.md §3](./SETUP.md)).
 - CORS whitelist `FRONTEND_URL` (comma-separated); `credentials: true`.
 - Security headers: `nosniff`, `X-Frame-Options: DENY`, HSTS, CSP `default-src 'self'`.
 - Body limit 1 MB (metadata JSON) — media đi S3.
@@ -903,7 +906,10 @@ Stream `JOBS` (retention: work-queue, `max_deliver=5`, ack wait 30s) với các 
 
 ### 17.1 Observability
 
-- **Log**: pino JSON, mọi request có `x-request-id`; WS events log ở `debug`.
+Chi tiết setup log + error trace: [SETUP.md §3–§4](./SETUP.md).
+
+- **Log**: `nestjs-pino` JSON, mọi request có `x-request-id` (genReqId + echo); WS events log ở `debug`;
+  log level: SystemError→`error`, BusinessError→`warn`, milestone→`info`.
 - **Metric** (`/metrics` Prometheus): `http_request_duration_seconds` (histogram),
   `ws_connections`, `ws_events_total{event}`, `redis_op_duration_seconds{op}`,
   `nats_consumer_pending{consumer}`, `nats_msg_redelivered_total{subject}`,
@@ -911,7 +917,8 @@ Stream `JOBS` (retention: work-queue, `max_deliver=5`, ack wait 30s) với các 
   `otp_locked_total`, `refresh_stale_total` (cảnh báo replay).
 - **Health**: `/health/live` (process sống), `/health/ready` (Postgres `SELECT 1`, Redis `PING`,
   NATS `PING`, S3 `HEAD bucket` — fail → 503, load balancer ngừng đưa traffic).
-- **Tracing**: span theo request-id; log error phân biệt `System` (error) vs `Business` (warn).
+- **Tracing**: `requestId` xuyên HTTP → service → NATS header → worker log; SystemError wrap
+  `cause` chain (không nuốt nguyên nhân gốc).
 
 ### 17.2 Graceful shutdown
 
@@ -939,9 +946,9 @@ Stream `JOBS` (retention: work-queue, `max_deliver=5`, ack wait 30s) với các 
 
 | Tầng | Tool | Trọng tâm |
 |---|---|---|
-| Unit | Jest | service thuần: username validate, direct_key, preview, state machine call |
-| Integration | Testcontainers (pg + redis + minio + nats) | OTP atomic lock, refresh rotate/replay → revoke family, max 5 session, unread rebuild, purge 24h, friendship transitions, JetStream delayed job |
-| E2E | Supertest + socket.io-client | đăng ký → verify OTP → login → kết bạn → gửi tin 2 chiều → presence → call signaling → story hết hạn |
+| Unit | `bun test` (`bun:test`) | service thuần: username validate, direct_key, preview, state machine call |
+| Integration | Testcontainers (pg + redis + minio + nats) chạy dưới `bun test` | OTP atomic lock, refresh rotate/replay → revoke family, max 5 session, unread rebuild, purge 24h, friendship transitions, JetStream delayed job |
+| E2E | `supertest` + `socket.io-client` | đăng ký → verify OTP → login → kết bạn → gửi tin 2 chiều → presence → call signaling → story hết hạn |
 | Load (sau) | k6 / autocannon | WS fan-out, gửi tin, presence heartbeat |
 
 Coverage cao cho: nhánh lỗi Redis (fail-closed vs fail-open), replay token, OTP sai 5 lần,
@@ -953,7 +960,7 @@ Coverage cao cho: nhánh lỗi Redis (fail-closed vs fail-open), replay token, O
 
 | Phase | Nội dung | Exit criteria |
 |---|---|---|
-| **P0 — Nền** | Scaffold NestJS, config, Drizzle+schema §5, Redis infra §6 (Lua scripts), NATS JetStream (stream `JOBS` + worker skeleton), Docker Compose | migrate xanh, `/health/ready` pass, unit test Lua wrapper |
+| **P0 — Nền** | Scaffold NestJS (Bun toolchain), config Zod fail-fast, Drizzle+schema §5, Redis infra §6 (Lua scripts), NATS JetStream (stream `JOBS` + worker skeleton), Docker Compose | migrate xanh, `/health/ready` pass, `bun test` unit Lua wrapper |
 | **P1 — Auth** | Register (fullName+username+email), OTP, login identifier, refresh rotation, logout, đổi mật khẩu | e2e auth xanh; replay → family revoke có test |
 | **P2 — Bạn bè** | Search username, request/accept/reject/unfriend/block, auto DIRECT conversation | transition matrix test (mọi cặp status) |
 | **P3 — Chat** | Conversations, gửi/nhận text, timeline cursor, read/unread, WS realtime, typing | 2 client đổi tin realtime, reconnect sync đúng |
@@ -968,7 +975,7 @@ Coverage cao cho: nhánh lỗi Redis (fail-closed vs fail-open), replay token, O
 
 | # | Quyết định |
 |---|---|
-| 1 | Framework API: **NestJS**; ORM **Drizzle** (`drizzle-kit` migrate); Redis **ioredis**; jobs **NATS JetStream** |
+| 1 | Framework API: **NestJS**; ORM **Drizzle** (`drizzle-kit` migrate); Redis **ioredis**; jobs **NATS JetStream**; toolchain **Bun** (`bun test` làm test runner) |
 | 2 | **Redis-first**: token, session, OTP, presence, unread, typing, ringing → Redis; DB là source of truth cho message/friend/call log |
 | 3 | Có **hệ thống bạn bè** (request/accept/reject/block/unfriend) — nguồn visibility cho presence/story/note |
 | 4 | Đăng ký gồm **email + mật khẩu + fullName + username**; username `^[a-z0-9_]{3,30}$`, **không ký tự đặc biệt**, unique, immutable |

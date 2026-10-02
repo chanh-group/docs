@@ -3,7 +3,7 @@
 > Chuẩn **dùng chung cho mọi API** của LEMON CHAT. Mọi endpoint REST đều trả về envelope
 > thống nhất dưới đây — client không cần phân nhánh theo từng route.
 >
-> Tài liệu liên quan: [LEMON_CHAT.md](./LEMON_CHAT.md) · [AUTH.md](./AUTH.md)
+> Tài liệu liên quan: [LEMON_CHAT.md](./LEMON_CHAT.md) · [AUTH.md](./AUTH.md) · [SETUP.md](./SETUP.md)
 
 ---
 
@@ -264,15 +264,20 @@ export const messageOnly = (message: string) => ({ message });
 ### 7.2 Error — global exception filter
 
 ```ts
-// error.filter.ts — bắt mọi exception → envelope thống nhất
+// error.filter.ts — bắt mọi exception → envelope thống nhất + log đúng level
 @Catch()
 export class ErrorFilter implements ExceptionFilter {
+  constructor(private readonly logger: LoggerService) {}
+
   catch(err: unknown, host: ArgumentsHost) {
     const lang = host.switchToHttp().getRequest().headers['accept-language'] ?? 'vi';
     const appErr = toAppError(err); // BusinessError | SystemError
     const status = appErr.status();
     const code = appErr.code();     // SCREAMING_SNAKE_CASE ổn định
     const message = translate(code, lang, appErr.params());
+    // System → error (kèm stack + cause), Business → warn (không phải bug)
+    if (appErr.isSystem()) this.logger.error({ code, err }, appErr.message);
+    else this.logger.warn({ code }, appErr.message);
     host.switchToHttp().getResponse().status(status).json({ success: false, code, message });
   }
 }
@@ -287,9 +292,59 @@ Phân loại lỗi (đồng bộ status mapping §4):
 | `SystemError::*` còn lại | DB, bug, … | **500** `INTERNAL_SERVER_ERROR` |
 | Validation pipe fail | class-validator | **422** `VALIDATION_ERROR` |
 
+Chi tiết error tracing (log shape, cause chain, requestId xuyên NATS): [SETUP.md §4](./SETUP.md).
+
 ### 7.3 Quy ước bất di bất dịch
 
 1. Controller **không** tự build envelope — luôn qua helper + interceptor.
 2. Service ném typed error (`BusinessError`/`SystemError`), **không** trả `{ success: false }` thủ công.
 3. Thêm endpoint mới mà cần code lỗi mới → thêm vào catalogue §5 **trước**, rồi mới code.
 4. `code` là contract với client — **đổi tên code = breaking change** (cần versioning).
+
+### 7.4 Gói thư viện NestJS đề xuất (đều maintained, cộng đồng lớn)
+
+| Việc | Package | Ghi chú |
+|---|---|---|
+| Validate body | `class-validator` + `class-transformer` + `ValidationPipe` | Tích hợp sẵn NestJS; map fail → `422 VALIDATION_ERROR` qua `exceptionFactory` |
+| Validate bằng Zod (thay class-validator) | `nestjs-zod` + `zod` | Chọn 1 trong 2 — Zod mạnh hơn, share schema được với client |
+| Envelope success/error | **tự viết** interceptor + filter (§7.1/§7.2) | Không có package chuẩn nào — 30 dòng là xong, đừng kéo dependency |
+| JWT | **`jose`** | Zero-dependency, hiện đại (Auth.js, Cloudflare Workers cũng dùng); `SignJWT`/`jwtVerify` pin `algorithms: ['HS256']` chống algorithm-confusion; có sẵn JWKS nếu sau này nâng RS256/Google. **Bỏ `@nestjs/jwt`** (wrap `jsonwebtoken` 9, thêm `@types/jsonwebtoken`, ít lợi hơn) |
+| JWT + NestJS CJS | `jose@4.15.9` (dual CJS/ESM) | `jose` v5/v6 **ESM-only** — NestJS build CommonJS mặc định sẽ không `require` được. Chọn 1: pin `jose@4`, hoặc build ESM (`module: NodeNext`), hoặc wrapper `JwtService` dùng `await import('jose')`. Khuyến nghị: wrapper `JwtService` + `jose` v6 — che được biên ESM/CJS, đổi lib sau này không sập domain |
+| Guard Bearer | `AuthGuard` tự viết (~40 dòng) đọc `jose` verify qua `JwtService` wrapper | Self-written guard nhẹ hơn passport, dễ set `req.user` chuẩn `AuthUser` |
+| Cookie refresh | `cookie-parser` + `@nestjs/platform-express` (`res.cookie(..., { httpOnly, sameSite, secure })`) | Fastify adapter: `@fastify/cookie` |
+| argon2id | `argon2` | Prebuilt binary, native module chuẩn cho argon2id — **chốt rồi**, không thay bcrypt |
+| Redis | `ioredis` (v6) | Đây chính là "package mạnh" của mảng Redis: Lua `defineCommand`, ConnectionManager auto-reconnect, pipeline. So với `node-redis` thì ioredis API Lua/script gọn hơn — giữ ioredis |
+| Redis cho NestJS | `@nestjs-modules/ioredis` (hoặc custom `RedisModule` 20 dòng) | Custom provider được khuyến nghị — ít magic, inject được connection riêng cho pub/sub. Lua: `defineCommand('otpCheck', { numberOfKeys, lua })` — type-safe, giữ SHA 1 lần |
+| Drizzle | `drizzle-orm` + `drizzle-kit` + `pg` | `drizzle(pool)` inject qua custom provider; migrate bằng `drizzle-kit migrate` |
+| NATS JetStream | `nats` (official) | API `js.consumers.get(...)` / `msg.ack()` / `msg.nak(delay)` đầy đủ; hoặc `nestjs-nats-jetstream` nếu muốn DI sẵn |
+| Mail | `@nestjs-modules/mailer` (Nodemailer + Handlebars adapter) | Hoặc Nodemailer thuần trong worker — đủ dùng nếu chỉ gửi OTP template |
+| Socket.IO | `@nestjs/websockets` + `@nestjs/platform-socket.io` + `@socket.io/redis-adapter` | Official — gateway class y hệt controller |
+| i18n message | `nestjs-i18n` | Resolver theo `Accept-Language`, resource file `vi.json`/`en.json` — khớp §6 |
+| Health check | `@nestjs/terminus` | Gộp Postgres/Redis/NATS/S3 vào `/health/ready` |
+| Toolchain | **Bun** (thay npm/node cho install + run + test) | Bảng đổi lệnh + scripts mẫu: [SETUP.md §1](./SETUP.md) |
+| Test | **`bun test`** (`bun:test`) + `testcontainers` + `supertest` + `socket.io-client` | `bun add -d` để cài, `bun test` để chạy — chi tiết [SETUP.md §1](./SETUP.md), [LEMON_CHAT.md §18](./LEMON_CHAT.md) |
+| Log | `nestjs-pino` | JSON log + request-id + redact — setup đầy đủ [SETUP.md §3](./SETUP.md) |
+| Config | `@nestjs/config` + `zod` schema | Fail-fast boot khi env thiếu/sai — [SETUP.md §2](./SETUP.md) |
+
+> **Contract là cross-language:** envelope, `code`, status map, flow auth trong docs là giao kèo
+> với client — backend viết bằng ngôn ngữ/framework nào cũng phải trả về đúng y hệt. Client
+> không phân biệt được công nghệ backend nếu implement đúng docs này.
+
+---
+
+## 8. Áp dụng trong NestJS — Redis dependency tradeoff
+
+Hệ Redis-first (token/OTP/session **chỉ** sống ở Redis) đánh đổi: **Redis là hard dependency**
+của auth path — Redis chết = không đăng nhập/refresh được (đúng ý đồ fail-closed). Giảm thiểu:
+
+| Giải pháp | Ghi chú |
+|---|---|
+| AOF `everysec` + replica | Mất dữ liệu ≤ 1s; session mất thì user login lại — chấp nhận được |
+| Sentinel / Cluster | Tự failover, hạn chế downtime single-node |
+| `/health/ready` check Redis | LB ngừng đưa traffic vào node mất Redis — thay vì 503 lan |
+| 503 đúng chuẩn `SERVICE_UNAVAILABLE` | Client retry có backoff, **không** hiểu nhầm là logout |
+| Không có memory-fallback cho session | Cố ý: fallback đa node = rotate không atomic = lỗ hổng replay |
+
+> Đây là **quyết định có chủ đích** (đã chốt): ưu tiên tính đúng đắn của rotate/OTP atomic hơn
+> là "auth sống sót khi Redis chết". Nếu sau này cần auth availability cao hơn → Redis HA
+> (chọn hạ tầng), **không** bịa fallback in-process.
