@@ -9,7 +9,8 @@
 >
 > Tài liệu liên quan: [RESPONSES.md](./RESPONSES.md) (chuẩn body success/error dùng chung) ·
 > [AUTH.md](./AUTH.md) (luồng đăng ký/đăng nhập/quên mật khẩu/đổi mật khẩu chi tiết) ·
-> [SETUP.md](./SETUP.md) (Bun toolchain, config, logging, error tracing).
+> [SETUP.md](./SETUP.md) (Bun toolchain, config, logging, error tracing) ·
+> [STORIES_NOTES.md](./STORIES_NOTES.md) (sơ đồ kiến trúc & luồng Story 24h, Note 24h, mở rộng Phase 2).
 
 ---
 
@@ -766,6 +767,8 @@ secret ra client.
 ---
 
 ## 13. Story 24h & Note 24h
+ 
+> Chi tiết toàn bộ kiến trúc, database ERD, sơ đồ tuần tự và quy hoạch mở rộng Phase 2 (Rep Story vào chat, React Story, React tin nhắn): xem **[STORIES_NOTES.md](./STORIES_NOTES.md)**.
 
 ### 13.1 Story
 
