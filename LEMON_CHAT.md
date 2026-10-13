@@ -10,7 +10,8 @@
 > Tài liệu liên quan: [RESPONSES.md](./RESPONSES.md) (chuẩn body success/error dùng chung) ·
 > [AUTH.md](./AUTH.md) (luồng đăng ký/đăng nhập/quên mật khẩu/đổi mật khẩu chi tiết) ·
 > [SETUP.md](./SETUP.md) (Bun toolchain, config, logging, error tracing) ·
-> [STORIES_NOTES.md](./STORIES_NOTES.md) (sơ đồ kiến trúc & luồng Story 24h, Note 24h, mở rộng Phase 2).
+> [STORIES_NOTES.md](./STORIES_NOTES.md) (sơ đồ kiến trúc & luồng Story 24h, Note 24h, mở rộng Phase 2) ·
+> [DATABASE.md](./DATABASE.md) (Drizzle ORM, schema theo domain, migrations, testing).
 
 ---
 
@@ -37,7 +38,7 @@
 19. [Roadmap](#19-roadmap)
 20. [Quyết định đã chốt](#20-quyết-đã-chốt)
 
-Chuẩn response dùng chung: [RESPONSES.md](./RESPONSES.md) · Setup (Bun/config/logging/trace): [SETUP.md](./SETUP.md)
+Chuẩn response dùng chung: [RESPONSES.md](./RESPONSES.md) · Setup (Bun/config/logging/trace): [SETUP.md](./SETUP.md) · Database (Drizzle): [DATABASE.md](./DATABASE.md)
 
 ---
 

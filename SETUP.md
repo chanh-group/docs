@@ -2,7 +2,7 @@
 
 > Toolchain **Bun** (thay npm/node), cấu hình env fail-fast, logging chuẩn JSON, cách trace
 > system error. Chi tiết contract response: [RESPONSES.md](./RESPONSES.md) · Auth: [AUTH.md](./AUTH.md) ·
-> Tổng quan: [LEMON_CHAT.md](./LEMON_CHAT.md)
+> Tổng quan: [LEMON_CHAT.md](./LEMON_CHAT.md) · Database: [DATABASE.md](./DATABASE.md)
 
 ---
 
