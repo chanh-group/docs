@@ -198,10 +198,19 @@ nguyên 3 field bắt buộc trên.
 | `CALL_BUSY` | 409 | Đối phương đang bận máy |
 | `CALL_ENDED` | 409 | Cuộc gọi đã kết thúc |
 | `STORY_NOT_FOUND` | 404 | Story không tồn tại hoặc đã hết hạn |
+| `STORY_VIEW_FORBIDDEN` | 403 | Xem story của người không phải bạn bè |
+| `STORY_VIEWERS_FORBIDDEN` | 403 | Không phải chủ story xem danh sách người xem |
+| `STORY_DELETE_FORBIDDEN` | 403 | Không phải chủ story xoá story |
+| `INVALID_MEDIA_TYPE` | 400 | Story ảnh/video thiếu objectKey |
+| `INVALID_OBJECT_KEY` | 400 | objectKey ngoài thư mục stories/{userId}/ của mình |
+| `TEXT_STORY_REQUIRES_CONTENT` | 400 | Story dạng chữ thiếu caption/background |
 | `NOTE_TOO_LONG` | 400 | Note vượt 200 ký tự |
+| `NOTE_EMPTY_CONTENT` | 400 | Nội dung note trống |
+| `NOTE_NOT_FOUND` | 404 | Note không tồn tại hoặc đã hết hạn |
 | `FILE_TOO_LARGE` | 400 | Vượt giới hạn dung lượng |
 | `FILE_TYPE_NOT_ALLOWED` | 400 | MIME không trong whitelist |
-| `PRESIGN_FAILED` | 500 | Không cấp được URL upload |
+| `OBJECT_NOT_UPLOADED` | 400 | File chưa được upload lên storage |
+| `PRESIGN_FAILED` | 503 | Không cấp được URL upload |
 
 ### 5.5 General
 
@@ -264,24 +273,43 @@ export const messageOnly = (message: string) => ({ message });
 ### 7.2 Error — global exception filter
 
 ```ts
-// error.filter.ts — bắt mọi exception → envelope thống nhất + log đúng level
+// error-filter.ts — bắt mọi exception → envelope thống nhất + log đúng level
 @Catch()
 export class ErrorFilter implements ExceptionFilter {
-  constructor(private readonly logger: LoggerService) {}
+  private readonly logger: Logger;
 
-  catch(err: unknown, host: ArgumentsHost) {
-    const lang = host.switchToHttp().getRequest().headers['accept-language'] ?? 'vi';
-    const appErr = toAppError(err); // BusinessError | SystemError
-    const status = appErr.status();
-    const code = appErr.code();     // SCREAMING_SNAKE_CASE ổn định
-    const message = translate(code, lang, appErr.params());
-    // System → error (kèm stack + cause), Business → warn (không phải bug)
-    if (appErr.isSystem()) this.logger.error({ code, err }, appErr.message);
-    else this.logger.warn({ code }, appErr.message);
-    host.switchToHttp().getResponse().status(status).json({ success: false, code, message });
+  constructor(logger?: Logger) {
+    this.logger = logger ?? new Logger(ErrorFilter.name);
+  }
+
+  catch(exception: unknown, host: ArgumentsHost) {
+    const { request, response } = ctx(host); // Express request/response
+    const error = toAppError(exception);     // BusinessError | SystemError
+    const status = errorStatus(error);
+    const code = errorCode(error);           // SCREAMING_SNAKE_CASE ổn định
+    const lang = getLanguageFromHeader(request.headers['accept-language']);
+    const message = this.resolveMessage(error, code, status, lang);
+
+    // System → error (log kind + cause, KHÔNG bao giờ serialize cause ra client)
+    // Business → warn (không phải bug)
+    if (error instanceof SystemError) {
+      this.logger.error(`System error (${code})`, { kind: error.kind, cause: error.cause ?? error });
+    } else {
+      this.logger.warn(`Business error (${code})`, { status });
+    }
+    response.status(status).json({ success: false, code, message });
+  }
+
+  private resolveMessage(error: BusinessError | SystemError, code: ErrorCode, status: number, lang: string) {
+    if (error instanceof BusinessError && error.rawMessage !== undefined) return error.rawMessage;
+    const translated = t(code, lang, error instanceof BusinessError ? error.params : undefined);
+    if (translated !== code) return translated; // thiếu key i18n → KHÔNG trả raw key ra client
+    return t(codeForStatus(status), lang);      // fallback message generic theo status
   }
 }
 ```
+
+> implementation: `LemonCore/src/middleware/error-filter.ts`
 
 Phân loại lỗi (đồng bộ status mapping §4):
 
