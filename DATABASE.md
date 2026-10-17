@@ -192,6 +192,7 @@ lemon-backend/
   * `expires_at` (`timestamptz`): CHECK `expires_at = created_at + INTERVAL '24 hours'`.
   * CHECK: `kind = 'TEXT' OR object_key IS NOT NULL`.
   * Index: `(user_id, created_at DESC)`, `(expires_at)`.
+  * `deleted_at` (`timestamptz`, tombstone khi chủ story chủ động xóa — read paths lọc `deleted_at IS NULL`; purge job quét `expires_at < now() OR deleted_at < now()` để dọn S3 + row).
 * **Bảng `story_views`:**
   * Composite PK: `PRIMARY KEY (story_id, user_id)`.
   * `story_id` (FK $\rightarrow$ `stories.id` ON DELETE CASCADE).

@@ -302,6 +302,8 @@ sequenceDiagram
     end
 ```
 
+> **Tombstone:** Story bị chủ động xóa (`DELETE /stories/:id`) chỉ được **đánh dấu** `deleted_at` — row và `object_key` còn nguyên để job dọn dẹp ở trên xóa S3 object theo batch (tránh orphan). Mọi read path trả 404 ngay khi xóa; purge job là nơi duy nhất xóa vĩnh viễn (trễ tối đa 1 chu kỳ cron ≈ 5 phút).
+
 ---
 
 ## 5. Quy hoạch Hướng phát triển tương lai (Phase 2 Roadmap)
