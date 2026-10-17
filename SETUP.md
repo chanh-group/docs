@@ -427,7 +427,7 @@ Không có service nào khác — mail queue chạy trong cùng process (p-queue
 | Redis | cache read (best-effort) | đi tiếp vào DB | `warn` `cache.fallback` — không spam (sample 1%) |
 | Redis | rate-limit (fail-open) | cho qua request | `warn` `ratelimit.degraded` |
 | Postgres | mọi query | `500 INTERNAL_SERVER_ERROR` | `error` + stack + cause |
-| S3 | presign/upload verify | `500`/`PRESIGN_FAILED` | `error` + stack |
+| S3 | presign/upload verify | `503`/`PRESIGN_FAILED` | `error` + stack |
 | SMTP | gửi mail (qua MailQueue) | không fail request (fire-and-forget) | `warn` `mail.send_failed`, retry 2 lần (1s/5s) trong queue |
 
 ### 4.5 Alert metric (từ log/metric — [LEMON_CHAT.md §17.1](./LEMON_CHAT.md))
