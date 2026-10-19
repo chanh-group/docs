@@ -448,3 +448,11 @@ CREATE INDEX messages_story_idx ON messages(story_id);
 | `403` | `STORY_DELETE_FORBIDDEN` | Chỉ chủ sở hữu mới có quyền xóa story. |
 | `404` | `STORY_NOT_FOUND` | Story không tồn tại hoặc đã hết hạn sau 24h. |
 | `404` | `NOTE_NOT_FOUND` | Không tìm thấy Note hoặc Note đã hết hạn. |
+
+---
+
+## 7. Tài liệu tích hợp Frontend (`lemon-ui`)
+
+Chi tiết kiến trúc giao diện, Component hierarchy, React Query hooks, từ điển đa ngôn ngữ (vi/en), và hướng dẫn kết nối E2E xem tại:
+👉 **[STORIES_FRONTEND_GUIDE.md](./STORIES_FRONTEND_GUIDE.md)**
+
