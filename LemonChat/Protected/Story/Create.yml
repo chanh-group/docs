@@ -1,0 +1,36 @@
+info:
+  name: Create Story
+  type: http
+  seq: 1
+
+http:
+  method: POST
+  url: "{{base_url}}/api/stories"
+  body:
+    type: json
+    data: |-
+      {
+        "kind": "TEXT",
+        "caption": "Hello from LemonChat",
+        "background": "#FFF4CC"
+      }
+  auth: inherit
+
+runtime:
+  actions:
+    - type: set-variable
+      phase: after-response
+      selector:
+        expression: res.body.data.id
+        method: jsonq
+      variable:
+        name: story_id
+        scope: runtime
+      description: Reuse the story id in later requests
+
+settings:
+  encodeUrl: true
+  timeout: 0
+  followRedirects: true
+  maxRedirects: 5
+  forwardAuthorizationHeader: false

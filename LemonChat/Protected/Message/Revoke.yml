@@ -1,0 +1,20 @@
+info:
+  name: Revoke Message
+  type: http
+  seq: 4
+
+http:
+  method: DELETE
+  url: "{{base_url}}/api/messages/:id"
+  params:
+    - name: id
+      value: "{{message_id}}"
+      type: path
+  auth: inherit
+
+settings:
+  encodeUrl: true
+  timeout: 0
+  followRedirects: true
+  maxRedirects: 5
+  forwardAuthorizationHeader: false

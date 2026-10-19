@@ -1,0 +1,20 @@
+info:
+  name: Logout
+  type: http
+  seq: 6
+
+http:
+  method: POST
+  url: "{{base_url}}/api/auth/logout"
+  headers:
+    - name: x-refresh-token
+      value: "{{refresh_token}}"
+      description: Enable when not using the refresh-token cookie set by Login
+      disabled: true
+
+settings:
+  encodeUrl: true
+  timeout: 0
+  followRedirects: true
+  maxRedirects: 5
+  forwardAuthorizationHeader: false

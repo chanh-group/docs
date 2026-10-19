@@ -1,0 +1,21 @@
+info:
+  name: List Conversations
+  type: http
+  seq: 2
+
+http:
+  method: GET
+  url: "{{base_url}}/api/conversations?limit={{conversation_limit}}"
+  params:
+    - name: limit
+      value: "{{conversation_limit}}"
+      type: query
+      description: Defaults to 20 when omitted
+  auth: inherit
+
+settings:
+  encodeUrl: true
+  timeout: 0
+  followRedirects: true
+  maxRedirects: 5
+  forwardAuthorizationHeader: false

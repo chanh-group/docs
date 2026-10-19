@@ -1,0 +1,20 @@
+info:
+  name: View Story
+  type: http
+  seq: 4
+
+http:
+  method: POST
+  url: "{{base_url}}/api/stories/:id/view"
+  params:
+    - name: id
+      value: "{{story_id}}"
+      type: path
+  auth: inherit
+
+settings:
+  encodeUrl: true
+  timeout: 0
+  followRedirects: true
+  maxRedirects: 5
+  forwardAuthorizationHeader: false

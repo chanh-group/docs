@@ -68,13 +68,13 @@
 // POST /api/auth/request-otp — 200 (message only)
 {
   "success": true,
-  "message": "Đã gửi mã OTP đến email của bạn"
+  "message": "Đã gửi mã OTP"
 }
 
 // POST /api/auth/signup — 201
 {
   "success": true,
-  "message": "Đăng ký thành công",
+  "message": "Tạo tài khoản thành công",
   "data": {
     "id": "0193a2b1-7c4d-7e8f-9a0b-1c2d3e4f5a6b",
     "email": "lemon@gmail.com",
@@ -109,9 +109,10 @@
 | `code` | `string` | luôn có | Mã ổn định (bảng §5) — client switch theo field này |
 | `message` | `string` | luôn có | Nội dung theo `Accept-Language` |
 
-**Không có `data` trong error body.** Chi tiết field sai (validate) nằm trong `message`
-hoặc (tuỳ chọn mở rộng) thêm `"details": [{ field, message }]` — nếu mở rộng thì giữ
-nguyên 3 field bắt buộc trên.
+**Không có `data` trong error body.** Với lỗi validate, `message` chứa các issue đã localize
+theo `Accept-Language`, nối bằng `"; "` (mỗi issue dạng `path: message` nếu có `path`).
+Schema khai báo message dưới dạng i18n key (`vmsg` trong `src/utils/validation.ts`);
+error filter dịch key qua `src/utils/i18n/locales/`, message không phải key trả nguyên văn.
 
 ### 3.1 Ví dụ
 
@@ -123,7 +124,7 @@ nguyên 3 field bắt buộc trên.
 { "success": false, "code": "INVALID_OTP", "message": "Mã OTP không đúng hoặc đã hết hạn" }
 
 // 422 — validate body
-{ "success": false, "code": "VALIDATION_ERROR", "message": "username chỉ được chứa chữ thường, số và dấu gạch dưới" }
+{ "success": false, "code": "VALIDATION_ERROR", "message": "username: Tên đăng nhập chỉ được chứa chữ cái thường, số và dấu gạch dưới" }
 
 // 429 — rate limit
 { "success": false, "code": "TOO_MANY_REQUESTS", "message": "Bạn thao tác quá nhiều, vui lòng thử lại sau" }
@@ -229,8 +230,10 @@ nguyên 3 field bắt buộc trên.
 ## 6. Đa ngôn ngữ (`message`)
 
 - Client gửi `Accept-Language: vi` (mặc định) hoặc `en`.
-- Server dịch `message` theo `code` + params (i18n resource file). `code` **luôn giữ nguyên**.
-- `message` tự do (nội dung chi tiết từ validator) được trả nguyên văn, không dịch.
+- Server dịch `message` theo `code` + params, success key (`t()` qua `@Lang()`) hoặc validation
+  key — i18n resource `src/utils/i18n/locales/{vi,en}.json`. `code` **luôn giữ nguyên**.
+- Validator khai báo message bằng key (`vmsg`), error filter dịch theo `Accept-Language`;
+  message không phải key được trả nguyên văn. Thiếu/không hỗ trợ header → mặc định `vi`.
 
 ```
 Accept-Language: en
@@ -241,34 +244,29 @@ Accept-Language: en
 
 ## 7. Áp dụng trong NestJS
 
-### 7.1 Success — global interceptor
+### 7.1 Success — typed builders
+
+`src/utils/response.ts` định nghĩa kiểu `SuccessResponse<T>` và 4 builder. Controller trả thẳng
+kết quả builder (không tự build envelope); HTTP status do `@HttpCode` của route quyết định
+(mặc định `200`, signup/story create dùng `201`).
 
 ```ts
-// success.interceptor.ts — bọc MỌI controller response
-@Injectable()
-export class SuccessInterceptor implements NestInterceptor {
-  intercept(ctx: ExecutionContext, next: CallHandler): Observable<unknown> {
-    return next.handle().pipe(
-      map((result) => {
-        // Controller trả { data, message?, status? } từ helper ok()/withMessage()/created()/messageOnly()
-        const { data, message = 'OK', status = 200 } = normalize(result);
-        const body: Record<string, unknown> = { success: true, message };
-        if (data !== undefined && data !== null) body.data = data; // bỏ qua khi không có
-        return { status, body };
-      }),
-    );
-  }
-}
+export type SuccessResponse<T = never> = { success: true; message: string } & ([T] extends [never]
+  ? { data?: undefined }
+  : { data: T });
+
+const successWithData = <T>(message: string, data: T): SuccessResponse<T> =>
+  ({ success: true, message, data }) as SuccessResponse<T>;
+
+export const ok = <T>(data: T): SuccessResponse<T> => successWithData("OK", data);
+export const withMessage = <T>(data: T, message: string): SuccessResponse<T> => successWithData(message, data);
+export const messageOnly = (message: string): SuccessResponse => ({ success: true, message });
+export const created = <T>(data: T, message: string): SuccessResponse<T> => successWithData(message, data);
 ```
 
-Helper cho controller (trả thuần, interceptor lo envelope):
+Message localize qua `t(key, lang)` với `@Lang()` (xem §6).
 
-```ts
-export const ok = <T>(data: T) => ({ data });
-export const withMessage = <T>(data: T, message: string) => ({ data, message });
-export const created = <T>(data: T, message: string) => ({ data, message, status: 201 });
-export const messageOnly = (message: string) => ({ message });
-```
+> implementation: `LemonCore/src/utils/response.ts`
 
 ### 7.2 Error — global exception filter
 
@@ -311,6 +309,9 @@ export class ErrorFilter implements ExceptionFilter {
 
 > implementation: `LemonCore/src/middleware/error-filter.ts`
 
+`BusinessError.validation` mang danh sách `issues`; filter dịch từng issue theo i18n key
+(`t(issue.message, lang, issue.params)`), format `path: message` và join `"; "` (xem §6).
+
 Phân loại lỗi (đồng bộ status mapping §4):
 
 | Loại | Ví dụ | Status |
@@ -318,13 +319,13 @@ Phân loại lỗi (đồng bộ status mapping §4):
 | `BusinessError` | `InvalidOtp`, `UserNotFound`, … | theo bảng §4/§5 |
 | `SystemError::Cache` (Redis trên path critical) | rotate/OTP fail | **503** `SERVICE_UNAVAILABLE` |
 | `SystemError::*` còn lại | DB, bug, … | **500** `INTERNAL_SERVER_ERROR` |
-| Validation pipe fail | class-validator | **422** `VALIDATION_ERROR` |
+| Validation pipe fail | Zod (`standardSchemaPipe`) | **422** `VALIDATION_ERROR` |
 
 Chi tiết error tracing (log shape, cause chain, requestId xuyên MailQueue): [SETUP.md §4](./SETUP.md).
 
 ### 7.3 Quy ước bất di bất dịch
 
-1. Controller **không** tự build envelope — luôn qua helper + interceptor.
+1. Controller **không** tự build envelope — luôn qua typed builder trong `src/utils/response.ts` (§7.1).
 2. Service ném typed error (`BusinessError`/`SystemError`), **không** trả `{ success: false }` thủ công.
 3. Thêm endpoint mới mà cần code lỗi mới → thêm vào catalogue §5 **trước**, rồi mới code.
 4. `code` là contract với client — **đổi tên code = breaking change** (cần versioning).

@@ -1,0 +1,26 @@
+info:
+  name: Mark Conversation Read
+  type: http
+  seq: 4
+
+http:
+  method: POST
+  url: "{{base_url}}/api/conversations/:id/read"
+  params:
+    - name: id
+      value: "{{conversation_id}}"
+      type: path
+  body:
+    type: json
+    data: |-
+      {
+        "lastReadMessageId": "{{message_id}}"
+      }
+  auth: inherit
+
+settings:
+  encodeUrl: true
+  timeout: 0
+  followRedirects: true
+  maxRedirects: 5
+  forwardAuthorizationHeader: false

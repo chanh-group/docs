@@ -1,0 +1,23 @@
+info:
+  name: Verify OTP
+  type: http
+  seq: 2
+
+http:
+  method: POST
+  url: "{{base_url}}/api/auth/verify-otp"
+  body:
+    type: json
+    data: |-
+      {
+        "email": "{{email}}",
+        "otp": "{{otp}}",
+        "purpose": "signup"
+      }
+
+settings:
+  encodeUrl: true
+  timeout: 0
+  followRedirects: true
+  maxRedirects: 5
+  forwardAuthorizationHeader: false

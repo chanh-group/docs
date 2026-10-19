@@ -1,0 +1,9 @@
+info:
+  name: Public
+  type: folder
+  seq: 1
+
+request:
+  headers:
+    - name: Accept-Language
+      value: "{{language}}"

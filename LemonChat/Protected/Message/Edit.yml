@@ -1,0 +1,26 @@
+info:
+  name: Edit Message
+  type: http
+  seq: 3
+
+http:
+  method: PATCH
+  url: "{{base_url}}/api/messages/:id"
+  params:
+    - name: id
+      value: "{{message_id}}"
+      type: path
+  body:
+    type: json
+    data: |-
+      {
+        "body": "Edited message from Bruno"
+      }
+  auth: inherit
+
+settings:
+  encodeUrl: true
+  timeout: 0
+  followRedirects: true
+  maxRedirects: 5
+  forwardAuthorizationHeader: false

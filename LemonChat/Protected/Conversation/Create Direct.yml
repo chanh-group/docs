@@ -1,0 +1,34 @@
+info:
+  name: Create Direct
+  type: http
+  seq: 1
+
+http:
+  method: POST
+  url: "{{base_url}}/api/conversations/direct"
+  body:
+    type: json
+    data: |-
+      {
+        "targetUserId": "{{target_user_id}}"
+      }
+  auth: inherit
+
+runtime:
+  actions:
+    - type: set-variable
+      phase: after-response
+      selector:
+        expression: res.body.data.id
+        method: jsonq
+      variable:
+        name: conversation_id
+        scope: runtime
+      description: Reuse the conversation id in later requests
+
+settings:
+  encodeUrl: true
+  timeout: 0
+  followRedirects: true
+  maxRedirects: 5
+  forwardAuthorizationHeader: false

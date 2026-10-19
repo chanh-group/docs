@@ -1,0 +1,32 @@
+info:
+  name: Refresh
+  type: http
+  seq: 5
+
+http:
+  method: POST
+  url: "{{base_url}}/api/auth/refresh"
+  headers:
+    - name: x-refresh-token
+      value: "{{refresh_token}}"
+      description: Enable when not using the refresh-token cookie set by Login
+      disabled: true
+
+runtime:
+  actions:
+    - type: set-variable
+      phase: after-response
+      selector:
+        expression: res.body.data.accessToken
+        method: jsonq
+      variable:
+        name: access_token
+        scope: runtime
+      description: Replace the access token after refresh
+
+settings:
+  encodeUrl: true
+  timeout: 0
+  followRedirects: true
+  maxRedirects: 5
+  forwardAuthorizationHeader: false

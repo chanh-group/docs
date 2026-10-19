@@ -87,7 +87,7 @@ flowchart TD
     StoryModule <-->|"Cache Feed (TTL 60s)"| RedisCache
 
     %% Purge cron flows
-    CronModule -->|"Acquire lock leader (5s)"| RedisCache
+    CronModule -->|"Acquire lock leader (60s)"| RedisCache
     CronModule -->|"DELETE expired records"| PgDB
     CronModule -->|"Batch delete file vật lý"| S3Storage
 ```
@@ -281,14 +281,14 @@ sequenceDiagram
     participant S3 as S3 / MinIO Storage
 
     Scheduler->>Scheduler: Kích hoạt định kỳ mỗi 5 phút (*/5 * * * *)
-    Scheduler->>Redis: SET lock:purge-stories-notes 1 NX EX 5 (Xin Leader Lock)
+    Scheduler->>Redis: SET lock:purge-stories-notes <uuid> NX EX 60 (Xin Leader Lock; release compare-and-del)
     alt Node khác đang chạy (Lock thất bại)
         Redis-->>Scheduler: False -> Bỏ qua lần chạy này
     else Node hiện tại là Leader (Lock thành công)
         Redis-->>Scheduler: True -> Tiếp tục thực thi
 
         %% 1. Dọn dẹp Stories hết hạn
-        Scheduler->>DB: DELETE FROM stories WHERE expires_at < now() RETURNING object_key, bucket
+        Scheduler->>DB: DELETE FROM stories WHERE expires_at < now() OR deleted_at IS NOT NULL RETURNING object_key, bucket
         DB-->>Scheduler: Trả về danh sách object_key đã bị xóa
 
         opt Nếu có file media cần xóa

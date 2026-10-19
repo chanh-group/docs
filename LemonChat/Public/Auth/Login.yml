@@ -1,0 +1,42 @@
+info:
+  name: Login
+  type: http
+  seq: 4
+
+http:
+  method: POST
+  url: "{{base_url}}/api/auth/login"
+  body:
+    type: json
+    data: |-
+      {
+        "identifier": "{{email}}",
+        "password": "{{password}}"
+      }
+
+runtime:
+  actions:
+    - type: set-variable
+      phase: after-response
+      selector:
+        expression: res.body.data.accessToken
+        method: jsonq
+      variable:
+        name: access_token
+        scope: runtime
+      description: Reuse the access token in protected requests
+    - type: set-variable
+      phase: after-response
+      selector:
+        expression: res.body.data.user.id
+        method: jsonq
+      variable:
+        name: current_user_id
+        scope: runtime
+
+settings:
+  encodeUrl: true
+  timeout: 0
+  followRedirects: true
+  maxRedirects: 5
+  forwardAuthorizationHeader: false

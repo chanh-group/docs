@@ -1,0 +1,23 @@
+info:
+  name: Upsert Note
+  type: http
+  seq: 1
+
+http:
+  method: PUT
+  url: "{{base_url}}/api/notes"
+  body:
+    type: json
+    data: |-
+      {
+        "content": "Available to chat",
+        "background": "#FFF4CC"
+      }
+  auth: inherit
+
+settings:
+  encodeUrl: true
+  timeout: 0
+  followRedirects: true
+  maxRedirects: 5
+  forwardAuthorizationHeader: false

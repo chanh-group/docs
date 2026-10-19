@@ -1,0 +1,12 @@
+info:
+  name: Protected
+  type: folder
+  seq: 2
+
+request:
+  headers:
+    - name: Accept-Language
+      value: "{{language}}"
+  auth:
+    type: bearer
+    token: "{{access_token}}"

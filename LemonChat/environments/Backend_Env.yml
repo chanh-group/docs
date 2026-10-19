@@ -1,0 +1,59 @@
+name: Backend_Env
+variables:
+  - name: base_url
+    value: http://localhost:3000
+    description: LemonCore base URL without the /api prefix
+  - name: access_token
+    value: ""
+    description: JWT access token returned by Login
+  - name: refresh_token
+    value: ""
+    description: Optional refresh token when not using Bruno's cookie jar
+  - name: language
+    value: vi
+    description: Value for the Accept-Language header
+  - name: request_id
+    value: lemonchat-docs
+    description: Optional idempotency or request tracing value
+  - name: email
+    value: user@example.com
+    description: Account email used by auth requests
+  - name: full_name
+    value: Lemon User
+    description: Full name used by Signup
+  - name: username
+    value: lemon_user
+    description: Username used by Signup
+  - name: password
+    secret: true
+    description: Current account password
+  - name: new_password
+    secret: true
+    description: New password used by reset and change-password requests
+  - name: otp
+    secret: true
+    description: Six-digit OTP
+  - name: target_user_id
+    value: 11111111-1111-4111-8111-111111111111
+    description: User id used to create a direct conversation
+  - name: conversation_id
+    value: 22222222-2222-4222-8222-222222222222
+    description: Conversation id used by conversation and message requests
+  - name: message_id
+    value: 33333333-3333-4333-8333-333333333333
+    description: Message id used by edit, revoke, and mark-read requests
+  - name: story_id
+    value: 44444444-4444-4444-8444-444444444444
+    description: Story id used by story requests
+  - name: conversation_limit
+    value: "20"
+    description: Number of conversations to return
+  - name: message_limit
+    value: "30"
+    description: Number of messages to return
+  - name: message_cursor
+    value: ""
+    description: Optional backward-pagination cursor
+  - name: message_after
+    value: ""
+    description: Optional forward-pagination cursor

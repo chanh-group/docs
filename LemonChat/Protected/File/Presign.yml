@@ -1,0 +1,24 @@
+info:
+  name: Presign File Upload
+  type: http
+  seq: 1
+
+http:
+  method: POST
+  url: "{{base_url}}/api/files/presign"
+  body:
+    type: json
+    data: |-
+      {
+        "kind": "STORY_IMAGE",
+        "sizeBytes": 102400,
+        "mimeType": "image/jpeg"
+      }
+  auth: inherit
+
+settings:
+  encodeUrl: true
+  timeout: 0
+  followRedirects: true
+  maxRedirects: 5
+  forwardAuthorizationHeader: false
