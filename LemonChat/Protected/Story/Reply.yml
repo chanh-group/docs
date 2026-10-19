@@ -1,0 +1,26 @@
+info:
+  name: Reply Story
+  type: http
+  seq: 9
+
+http:
+  method: POST
+  url: "{{base_url}}/api/stories/:id/reply"
+  params:
+    - name: id
+      value: "{{story_id}}"
+      type: path
+  body:
+    type: json
+    data: |-
+      {
+        "body": "Đẹp quá bạn ơi! 🔥"
+      }
+  auth: inherit
+
+settings:
+  encodeUrl: true
+  timeout: 0
+  followRedirects: true
+  maxRedirects: 5
+  forwardAuthorizationHeader: false

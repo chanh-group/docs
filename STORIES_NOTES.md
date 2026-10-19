@@ -314,126 +314,137 @@ sequenceDiagram
 
 ---
 
-### 5.1. Luồng Rep Story vào tin nhắn riêng 
+### 5.1. Luồng Rep Story vào tin nhắn riêng (Direct Message)
 
-Khi bạn bè gõ chữ trả lời Story, hệ thống tự động chèn tin nhắn kèm snapshot preview của Story vào cuộc trò chuyện `DIRECT`:
+Khi bạn bè gõ chữ trả lời Story (`POST /stories/:id/reply`), hệ thống tự động:
+1. Đánh dấu người trả lời đã xem Story (`markAsViewed`).
+2. Lấy hoặc tạo phòng hội thoại 1:1 (`conversations` DIRECT) giữa người trả lời và chủ sở hữu Story (`getOrCreateDirect`).
+3. Chèn bản ghi tin nhắn mới vào bảng `messages` với snapshot preview của Story (`story_id` và `story_preview`), cập nhật snippet `last_message_preview` cho hội thoại.
+4. Tăng unread counter trong Redis cho người nhận và phát sự kiện Socket.IO `message:new` tới room `conv:{id}`.
 
 ```mermaid
 sequenceDiagram
     autonumber
     actor Viewer as Người xem Story
     actor Owner as Chủ Story
-    participant API as NestJS API
+    participant API as NestJS API (StoryService)
+    participant Conv as ConversationService
+    participant Msg as MessageService
     participant DB as PostgreSQL
     participant WS as Socket.IO Gateway
 
-    Viewer->>API: POST /stories/:id/reply { text: "Quán này ở đâu thế bạn ơi?" }
-    API->>DB: 1. Kiểm tra Story còn hạn (expires_at > now()) & là bạn bè ACCEPTED
-    API->>DB: 2. Lấy hoặc tạo cuộc hội thoại 1:1 (conversations DIRECT)
-    API->>DB: 3. INSERT INTO messages:<br/>- kind = 'STORY_REPLY'<br/>- body = 'Quán này ở đâu thế bạn ơi?'<br/>- story_id = story.id (ON DELETE SET NULL)<br/>- story_preview = JSON { thumbnail, caption }
-    DB-->>API: Message đã tạo
-    API->>WS: Emit sự kiện realtime "message:new" tới room conv:{id}
-    WS-->>Owner: Thông báo tin nhắn mới kèm thumbnail Story được trích dẫn
-    WS-->>Viewer: Hiển thị tin nhắn vừa gửi trong khung chat
-    API-->>Viewer: 200 OK { success: true, data: Message }
+    Viewer->>API: POST /stories/:id/reply { body: "Quán này ở đâu thế bạn ơi?" }
+    API->>DB: 1. Kiểm tra Story active & quan hệ bạn bè ACCEPTED
+    API->>DB: 2. markAsViewed(story.id, viewer.id)
+    API->>Conv: 3. getOrCreateDirect(viewer.id, owner.id)
+    Conv->>DB: Lấy hoặc tạo conversation DIRECT
+    Conv-->>API: Conversation entity
+    API->>Msg: 4. sendMessage(viewer.id, conv.id, { kind: "TEXT", body, storyId, storyPreview })
+    Msg->>DB: INSERT INTO messages (kind, body, story_id, story_preview, ...)
+    Msg->>DB: UPDATE conversations SET last_message_preview, last_message_id, ...
+    Msg->>WS: emit("message:new", messageResponse) to room conv:{id}
+    WS-->>Owner: Nhận tin nhắn mới kèm snapshot preview của Story
+    WS-->>Viewer: Hiển thị tin nhắn vừa gửi
+    API-->>Viewer: 201 Created { success: true, message: "Đã trả lời story", data: MessageResponse }
 ```
 
 ---
 
-### 5.2. Luồng Thả cảm xúc Story & Thả cảm xúc Tin nhắn
+### 5.2. Luồng Thả cảm xúc Story (React & Unreact Story)
+
+Người dùng có thể thả cảm xúc nhanh trên Story (`❤️`, `🔥`, `😂`, `😮`, `😢`, `👏`, `👍`):
 
 ```mermaid
 sequenceDiagram
     autonumber
-    actor User as Người dùng
-    actor Partner as Đối phương
-    participant API as NestJS API
+    actor User as Bạn bè (Người xem)
+    actor Owner as Chủ Story
+    participant API as NestJS API (StoryService)
     participant DB as PostgreSQL
+    participant Cache as Redis Cache
     participant WS as Socket.IO Gateway
 
     %% A. React Story
-    alt A. Thả cảm xúc nhanh trên Story (React Story)
-        User->>API: POST /stories/:id/react { emoji: "🔥" }
-        API->>DB: UPSERT INTO story_reactions (story_id, user_id, emoji)
-        API->>DB: Gửi tin nhắn ngắn chứa icon 🔥 vào conversation DIRECT của Chủ Story
-        API->>WS: Emit "message:new" tới Chủ Story
-        WS-->>Partner: Nhận tin nhắn "User đã bày tỏ cảm xúc 🔥 về story của bạn"
-        API-->>User: 200 OK { success: true }
-    end
+    User->>API: POST /stories/:id/react { emoji: "🔥" }
+    API->>DB: 1. Kiểm tra Story active & bạn bè ACCEPTED (không tự react story của mình)
+    API->>DB: 2. markAsViewed(story.id, user.id)
+    API->>DB: 3. UPSERT INTO story_reactions (story_id, user_id, emoji)
+    API->>Cache: 4. Xóa feed cache: stories:feed:{user.id} & stories:feed:{owner.id}
+    API->>WS: 5. emit("story:reaction", payload) tới room user:{owner.id}
+    WS-->>Owner: Nhận realtime thông báo reaction kèm UserSummary và emoji
+    API-->>User: 200 OK { success: true, message: "Đã bày tỏ cảm xúc về story", data: { storyId, emoji, createdAt } }
 
-    %% B. React Tin nhắn trong hộp thoại
-    alt B. Thả cảm xúc trên Tin nhắn (Message Reactions)
-        User->>API: PUT /conversations/:convId/messages/:msgId/reactions { emoji: "❤️" }
-        API->>DB: UPSERT INTO message_reactions (message_id, user_id, emoji)
-        DB-->>API: Lưu thành công
-        API->>WS: Emit "message:reaction_updated" tới room conv:{convId}
-        WS-->>Partner: Icon ❤️ xuất hiện realtime ngay trên tin nhắn
-        WS-->>User: Icon ❤️ xuất hiện trên giao diện
-        API-->>User: 200 OK { success: true }
-    end
+    %% B. Unreact Story
+    User->>API: DELETE /stories/:id/react
+    API->>DB: DELETE FROM story_reactions WHERE story_id = :id AND user_id = :user.id
+    API->>Cache: Xóa feed cache của user và chủ story
+    API-->>User: 200 OK { success: true, message: "Đã gỡ cảm xúc khỏi story" }
+
+    %% C. Xem danh sách cảm xúc (Chỉ chủ Story)
+    Owner->>API: GET /stories/:id/reactions
+    API->>DB: SELECT u.*, r.emoji, r.created_at FROM story_reactions r JOIN users u ...
+    API-->>Owner: 200 OK { success: true, message: "OK", data: [ { user, emoji, createdAt } ] }
 ```
 
 ---
 
-### 5.3. Mô hình dữ liệu mở rộng cho Phase 2
+### 5.3. Mô hình dữ liệu mở rộng
 
 ```sql
--- Bổ sung liên kết Story vào bảng messages 
-ALTER TABLE messages
-  ADD COLUMN story_id UUID REFERENCES stories(id) ON DELETE SET NULL,
-  ADD COLUMN story_preview JSONB; -- Snapshot { media_url, caption, kind }
-
--- Cac React trên story
+-- 1. Bảng cảm xúc trên Story (mỗi user tối đa 1 reaction active / story)
 CREATE TABLE story_reactions (
   story_id   UUID NOT NULL REFERENCES stories(id) ON DELETE CASCADE,
   user_id    UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-  emoji      TEXT NOT NULL, -- '❤️', '🔥', '😂', '😮', '😢', '👏'
+  emoji      TEXT NOT NULL, -- "❤️", "🔥", "😂", "😮", "😢", "👏", "👍"
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   PRIMARY KEY (story_id, user_id)
 );
+CREATE INDEX story_reactions_story_idx ON story_reactions(story_id);
+CREATE INDEX story_reactions_user_idx ON story_reactions(user_id);
 
--- Bảng cảm xúc trên Tin nhắn 
-CREATE TABLE message_reactions (
-  id         UUID PRIMARY KEY,
-  message_id UUID NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
-  user_id    UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-  emoji      TEXT NOT NULL, -- '❤️', '👍', '😂', '😮', '😢', '😡'
-  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-  CONSTRAINT message_reactions_unique UNIQUE (message_id, user_id)
-);
+-- 2. Cột liên kết Story trên bảng messages
+ALTER TABLE messages
+  ADD COLUMN story_id UUID REFERENCES stories(id) ON DELETE SET NULL,
+  ADD COLUMN story_preview JSONB; -- Snapshot { id, kind, bucket, objectKey, caption, background }
 
-CREATE INDEX message_reactions_msg_idx ON message_reactions (message_id);
+CREATE INDEX messages_story_idx ON messages(story_id);
 ```
 
 ---
 
 ## 6. Bảng danh mục API Endpoints & Mã lỗi
 
-### 6.1 Bảng Endpoints
+### 6.1 Bảng Endpoints Story
 
-| Giai đoạn | Phương thức | Endpoint Path | Mô tả tóm tắt |
-|:---:|:---:|---|---|
-| **MVP** | `POST` | `/stories` | Đăng Story mới (IMAGE, VIDEO, hoặc TEXT). |
-| **MVP** | `GET` | `/stories/feed` | Lấy danh sách Story còn hạn của bạn bè và của mình. |
-| **MVP** | `GET` | `/stories/:id` | Xem chi tiết 1 Story. |
-| **MVP** | `POST` | `/stories/:id/view` | Đánh dấu đã xem Story. |
-| **MVP** | `GET` | `/stories/:id/views` | Xem danh sách người đã xem (**chỉ chủ sở hữu Story**). |
-| **MVP** | `DELETE` | `/stories/:id` | Xóa Story chủ động + xóa object S3. |
-| **MVP** | `PUT` | `/notes` | Upsert Note trạng thái (tối đa 1 note active / user). |
-| **MVP** | `GET` | `/notes/feed` | Lấy danh sách Note còn hạn của bạn bè. |
-| **MVP** | `DELETE` | `/notes/me` | Gỡ Note của mình sớm. |
-| **Phase 2** | `POST` | `/stories/:id/reply` | Rep Story thành tin nhắn 1:1 trong hội thoại DIRECT. |
-| **Phase 2** | `POST` | `/stories/:id/react` | Thả biểu cảm nhanh trên Story. |
-| **Phase 2** | `PUT` | `/conversations/:id/messages/:msgId/reactions` | Thả / đổi reaction trên một tin nhắn. |
-| **Phase 2** | `DELETE` | `/conversations/:id/messages/:msgId/reactions` | Gỡ reaction khỏi tin nhắn. |
+| Phương thức | Endpoint Path | Quyền truy cập | Mô tả tóm tắt |
+|:---:|---|---|---|
+| `POST` | `/stories` | Auth User | Đăng Story mới (`IMAGE`, `VIDEO`, hoặc `TEXT`). |
+| `GET` | `/stories/feed` | Auth User | Lấy danh sách Story còn hạn của bạn bè & bản thân (kèm `myReaction`, `reactionsCount`). |
+| `GET` | `/stories/:id` | Bạn bè / Chủ story | Xem chi tiết 1 Story (kèm `hasViewed`, `myReaction`, `reactionsCount`). |
+| `POST` | `/stories/:id/view` | Bạn bè | Đánh dấu đã xem Story. |
+| `GET` | `/stories/:id/views` | **Chỉ chủ Story** | Xem danh sách người đã xem (kèm biểu cảm `reaction` nếu có). |
+| `POST` | `/stories/:id/react` | Bạn bè | Thả / cập nhật cảm xúc trên Story (`❤️`, `🔥`, `😂`, `😮`, `😢`, `👏`, `👍`). |
+| `DELETE` | `/stories/:id/react` | Bạn bè | Gỡ cảm xúc khỏi Story. |
+| `GET` | `/stories/:id/reactions` | **Chỉ chủ Story** | Xem danh sách chi tiết các biểu cảm trên Story. |
+| `POST` | `/stories/:id/reply` | Bạn bè | Trả lời Story thành tin nhắn 1:1 trong phòng chat DIRECT. |
+| `DELETE` | `/stories/:id` | **Chỉ chủ Story** | Xóa Story chủ động (tombstone `deleted_at`, dọn S3 qua Purge Job). |
+| `PUT` | `/notes` | Auth User | Upsert Note trạng thái (tối đa 1 note active / user). |
+| `GET` | `/notes/feed` | Auth User | Lấy danh sách Note còn hạn của bạn bè. |
+| `DELETE` | `/notes/me` | Auth User | Gỡ Note của mình sớm. |
 
-### 6.2 Bảng Mã lỗi đặc thù 
+### 6.2 Bảng Mã lỗi đặc thù Story & Interaction
 
 | HTTP Status | Error Code | Mô tả thông báo |
 |:---:|---|---|
 | `400` | `INVALID_MEDIA_TYPE` | Định dạng file không được hỗ trợ cho Story. |
-| `400` | `MEDIA_SIZE_EXCEEDED` | Dung lượng file vượt quá giới hạn (Ảnh > 10MB, Video > 50MB). |
-| `400` | `NOTE_CONTENT_INVALID` | Nội dung Note phải từ 1 đến 200 ký tự. |
-| `403` | `FORBIDDEN_VIEW_LIST` | Chỉ chủ sở hữu Story mới có quyền xem danh sách người xem. |
+| `400` | `FILE_TOO_LARGE` | Dung lượng file vượt quá giới hạn (Ảnh > 10MB, Video > 50MB). |
+| `400` | `INVALID_EMOJI` | Biểu cảm không hợp lệ (chỉ chấp nhận các icon story chuẩn). |
+| `400` | `CANNOT_REACT_OWN_STORY` | Bạn không thể tự bày tỏ cảm xúc story của chính mình. |
+| `400` | `CANNOT_REPLY_OWN_STORY` | Bạn không thể tự trả lời story của chính mình. |
+| `403` | `STORY_VIEW_FORBIDDEN` | Bạn chỉ có thể xem story của bạn bè hoặc chính mình. |
+| `403` | `STORY_VIEWERS_FORBIDDEN` | Chỉ người đăng story mới có thể xem danh sách người xem / reactions. |
+| `403` | `STORY_REACT_FORBIDDEN` | Bạn chỉ có thể bày tỏ cảm xúc story của bạn bè. |
+| `403` | `STORY_REPLY_FORBIDDEN` | Bạn chỉ có thể trả lời story của bạn bè. |
+| `403` | `STORY_DELETE_FORBIDDEN` | Chỉ chủ sở hữu mới có quyền xóa story. |
 | `404` | `STORY_NOT_FOUND` | Story không tồn tại hoặc đã hết hạn sau 24h. |
 | `404` | `NOTE_NOT_FOUND` | Không tìm thấy Note hoặc Note đã hết hạn. |

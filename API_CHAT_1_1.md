@@ -27,6 +27,7 @@
    - [3.8 Chỉnh sửa tin nhắn (`PATCH /messages/:id`)](#38-chỉnh-sửa-tin-nhắn-patch-messagesid)
    - [3.9 Thu hồi tin nhắn (`DELETE /messages/:id`)](#39-thu-hồi-tin-nhắn-delete-messagesid)
    - [3.10 Đánh dấu đã đọc (`POST /conversations/:id/read`)](#310-đánh-dấu-đã-đọc-post-conversationsidread)
+   - [3.11 Trả lời Story vào phòng chat 1-1 (`POST /stories/:id/reply`)](#311-trả-lời-story-vào-phòng-chat-1-1-post-storiesidreply)
 4. [Socket.IO Realtime Events](#4-socketio-realtime-events)
    - [4.1 Kết nối & Xác thực Handshake](#41-kết-nối--xác-thực-handshake)
    - [4.2 Sự kiện Client gửi lên (Client → Server)](#42-sự-kiện-client-gửi-lên-client--server)
@@ -635,6 +636,54 @@ sequenceDiagram
   * `404 CONVERSATION_NOT_FOUND`: Không tìm thấy cuộc trò chuyện.
   * `422 VALIDATION_ERROR`: `lastReadMessageId` không phải UUID hợp lệ.
 
+---
+
+### 3.11 Trả lời Story vào phòng chat 1-1 (`POST /stories/:id/reply`)
+> Trả lời trực tiếp một Story 24h của bạn bè. Hệ thống tự động tìm hoặc mở phòng chat 1:1 (`DIRECT`) với chủ sở hữu Story, chèn tin nhắn kèm snapshot preview của Story (`storyId` & `storyPreview`), cập nhật `last_message_preview` cho hộp thư, tăng bộ đếm chưa đọc và phát sự kiện `message:new` realtime.
+
+* **Method:** `POST`
+* **Path:** `/api/stories/:id/reply`
+* **Headers:** `Authorization: Bearer <access_token>`
+* **Params:** `id` (UUID của Story cần trả lời)
+* **Request Body:**
+  ```json
+  {
+    "body": "Bức ảnh này chụp ở đâu đẹp thế bạn?"
+  }
+  ```
+* **Response Success (201 Created):**
+  ```json
+  {
+    "success": true,
+    "message": "Đã trả lời story",
+    "data": {
+      "id": "0193a2b1-beef-1111-2222-333344445555",
+      "conversationId": "0193a2b1-beef-0000-0000-111122223333",
+      "senderId": "0193a2b1-7c4d-7e8f-9a0b-1c2d3e4f5a6b",
+      "kind": "TEXT",
+      "body": "Bức ảnh này chụp ở đâu đẹp thế bạn?",
+      "replyToId": null,
+      "storyId": "0193a2b1-beef-9999-0000-111122223333",
+      "storyPreview": {
+        "id": "0193a2b1-beef-9999-0000-111122223333",
+        "kind": "IMAGE",
+        "bucket": "lemon-stories",
+        "objectKey": "stories/user-1/photo.jpg",
+        "caption": "Sunset",
+        "background": null
+      },
+      "createdAt": "2026-10-19T10:00:00.000Z",
+      "editedAt": null,
+      "deletedAt": null
+    }
+  }
+  ```
+* **Response Error:**
+  * `400 CANNOT_REPLY_OWN_STORY`: Bạn không thể tự trả lời story của chính mình.
+  * `401 UNAUTHORIZED`: Chưa đăng nhập.
+  * `403 STORY_REPLY_FORBIDDEN`: Bạn chỉ có thể trả lời story của bạn bè (quan hệ `ACCEPTED`).
+  * `404 STORY_NOT_FOUND`: Story không tồn tại hoặc đã hết hạn.
+  * `422 VALIDATION_ERROR`: Nội dung `body` bị rỗng hoặc vượt quá 4000 ký tự.
 
 ---
 
@@ -736,6 +785,23 @@ Server phát tới cả room cuộc hội thoại `conv:{convId}` và room cá n
   "userId": "0193a2b1-7c4d-7e8f-9a0b-1c2d3e4f5a6a",
   "lastReadMessageId": "0193a2b1-beef-1111-2222-333344445555",
   "readAt": "2026-10-16T16:35:00.000Z"
+}
+```
+
+#### F. Cảm xúc trên Story (`story:reaction`)
+> Phát tới room cá nhân `user:{storyOwnerId}` của chủ sở hữu Story khi có bạn bè thả biểu cảm nhanh trên Story.
+
+```json
+{
+  "storyId": "0193a2b1-beef-9999-0000-111122223333",
+  "user": {
+    "id": "0193a2b1-7c4d-7e8f-9a0b-1c2d3e4f5a6b",
+    "username": "minh_tran",
+    "fullName": "Trần Minh",
+    "avatarUrl": "https://..."
+  },
+  "emoji": "🔥",
+  "createdAt": "2026-10-19T10:00:00.000Z"
 }
 ```
 
