@@ -17,14 +17,16 @@
    - [2.5 Sơ đồ Chỉnh sửa và Thu hồi tin nhắn](#25-sơ-đồ-chỉnh-sửa-và-thu-hồi-tin-nhắn)
    - [2.6 Sơ đồ Trạng thái soạn tin & Duy trì kết nối Online](#26-sơ-đồ-trạng-thái-soạn-tin--duy-trì-kết-nối-online)
 3. [REST API — Danh sách Endpoints](#3-rest-api--danh-sách-endpoints)
-   - [3.1 Tạo hoặc lấy phòng chat 1-1 (`POST /conversations/direct`)](#31-tạo-hoặc-lấy-phòng-chat-1-1-post-conversationsdirect)
-   - [3.2 Lấy danh sách hộp thư Inbox (`GET /conversations`)](#32-lấy-danh-sách-hộp-thư-inbox-get-conversations)
-   - [3.3 Lấy chi tiết cuộc hội thoại (`GET /conversations/:id`)](#33-lấy-chi-tiết-cuộc-hội-thoại-get-conversationsid)
-   - [3.4 Lấy lịch sử tin nhắn — Phân trang con trỏ (`GET /conversations/:id/messages`)](#34-lấy-lịch-sử-tin-nhắn--phân-trang-con-trỏ-get-conversationsidmessages)
-   - [3.5 Gửi tin nhắn mới (`POST /conversations/:id/messages`)](#35-gửi-tin-nhắn-mới-post-conversationsidmessages)
-   - [3.6 Chỉnh sửa tin nhắn (`PATCH /messages/:id`)](#36-chỉnh-sửa-tin-nhắn-patch-messagesid)
-   - [3.7 Thu hồi tin nhắn (`DELETE /messages/:id`)](#37-thu-hồi-tin-nhắn-delete-messagesid)
-   - [3.8 Đánh dấu đã đọc (`POST /conversations/:id/read`)](#38-đánh-dấu-đã-đọc-post-conversationsidread)
+   - [3.1 Tra cứu người dùng theo Username (`GET /users/by-username/:username`)](#31-tra-cứu-người-dùng-theo-username-get-usersby-usernameusername)
+   - [3.2 Tra cứu người dùng theo Email (`GET /users/by-email/:email`)](#32-tra-cứu-người-dùng-theo-email-get-usersby-emailemail)
+   - [3.3 Tạo hoặc lấy phòng chat 1-1 (`POST /conversations/direct`)](#33-tạo-hoặc-lấy-phòng-chat-1-1-post-conversationsdirect)
+   - [3.4 Lấy danh sách hộp thư Inbox (`GET /conversations`)](#34-lấy-danh-sách-hộp-thư-inbox-get-conversations)
+   - [3.5 Lấy chi tiết cuộc hội thoại (`GET /conversations/:id`)](#35-lấy-chi-tiết-cuộc-hội-thoại-get-conversationsid)
+   - [3.6 Lấy lịch sử tin nhắn — Phân trang con trỏ (`GET /conversations/:id/messages`)](#36-lấy-lịch-sử-tin-nhắn--phân-trang-con-trỏ-get-conversationsidmessages)
+   - [3.7 Gửi tin nhắn mới (`POST /conversations/:id/messages`)](#37-gửi-tin-nhắn-mới-post-conversationsidmessages)
+   - [3.8 Chỉnh sửa tin nhắn (`PATCH /messages/:id`)](#38-chỉnh-sửa-tin-nhắn-patch-messagesid)
+   - [3.9 Thu hồi tin nhắn (`DELETE /messages/:id`)](#39-thu-hồi-tin-nhắn-delete-messagesid)
+   - [3.10 Đánh dấu đã đọc (`POST /conversations/:id/read`)](#310-đánh-dấu-đã-đọc-post-conversationsidread)
 4. [Socket.IO Realtime Events](#4-socketio-realtime-events)
    - [4.1 Kết nối & Xác thực Handshake](#41-kết-nối--xác-thực-handshake)
    - [4.2 Sự kiện Client gửi lên (Client → Server)](#42-sự-kiện-client-gửi-lên-client--server)
@@ -278,7 +280,71 @@ sequenceDiagram
 
 ## 3. REST API — DANH SÁCH ENDPOINTS
 
-### 3.1 Tạo hoặc lấy phòng chat 1-1 (`POST /conversations/direct`)
+### 3.1 Tra cứu người dùng theo Username (`GET /users/by-username/:username`)
+> Dùng khi người dùng tìm kiếm bạn bè / đối tác qua username để mở phòng chat 1-1.
+
+* **Method:** `GET`
+* **Path:** `/api/users/by-username/:username`
+* **Headers:** `Authorization: Bearer <access_token>`
+* **Response Success (200 OK):**
+  ```json
+  {
+    "success": true,
+    "message": "OK",
+    "data": {
+      "id": "0193a2b1-7c4d-7e8f-9a0b-1c2d3e4f5a6b",
+      "username": "minh_lemon",
+      "email": "minh@lemon.dev",
+      "fullName": "Nguyễn Văn Minh",
+      "avatarUrl": "https://s3.lemonchat.io/avatars/minh.jpg",
+      "bio": null,
+      "phone": null,
+      "emailVerifiedAt": "2026-10-15T00:00:00.000Z",
+      "lastSeenAt": "2026-10-19T07:48:30.000Z",
+      "isActive": true,
+      "createdAt": "2026-10-15T00:00:00.000Z"
+    }
+  }
+  ```
+* **Response Error:**
+  * `401 UNAUTHORIZED`: Chưa đăng nhập hoặc token không hợp lệ.
+  * `404 NOT_FOUND`: Không tìm thấy người dùng (`USER_NOT_FOUND`).
+
+---
+
+### 3.2 Tra cứu người dùng theo Email (`GET /users/by-email/:email`)
+> Dùng khi tìm kiếm bạn bè / đối tác qua địa chỉ email.
+
+* **Method:** `GET`
+* **Path:** `/api/users/by-email/:email`
+* **Headers:** `Authorization: Bearer <access_token>`
+* **Response Success (200 OK):**
+  ```json
+  {
+    "success": true,
+    "message": "OK",
+    "data": {
+      "id": "0193a2b1-7c4d-7e8f-9a0b-1c2d3e4f5a6b",
+      "username": "minh_lemon",
+      "email": "minh@lemon.dev",
+      "fullName": "Nguyễn Văn Minh",
+      "avatarUrl": "https://s3.lemonchat.io/avatars/minh.jpg",
+      "bio": null,
+      "phone": null,
+      "emailVerifiedAt": "2026-10-15T00:00:00.000Z",
+      "lastSeenAt": "2026-10-19T07:48:30.000Z",
+      "isActive": true,
+      "createdAt": "2026-10-15T00:00:00.000Z"
+    }
+  }
+  ```
+* **Response Error:**
+  * `401 UNAUTHORIZED`: Chưa đăng nhập hoặc token không hợp lệ.
+  * `404 NOT_FOUND`: Không tìm thấy người dùng (`USER_NOT_FOUND`).
+
+---
+
+### 3.3 Tạo hoặc lấy phòng chat 1-1 (`POST /conversations/direct`)
 > Dùng khi người dùng bấm vào nút "Nhắn tin" trên trang cá nhân của bạn bè.  
 > API có tính chất **Idempotent**: nếu 2 người đã từng có cuộc hội thoại, API trả về cuộc hội thoại cũ chứ không tạo trùng (dựa vào `direct_key`).
 
@@ -322,7 +388,7 @@ sequenceDiagram
 
 ---
 
-### 3.2 Lấy danh sách hộp thư Inbox (`GET /conversations`)
+### 3.4 Lấy danh sách hộp thư Inbox (`GET /conversations`)
 > Trả về danh sách các cuộc hội thoại của user hiện tại, sắp xếp theo thời gian tin nhắn mới nhất giảm dần (`lastMessageAt DESC`). Tự động làm giàu số tin chưa đọc và trạng thái online từ Redis.
 
 * **Method:** `GET`
@@ -356,7 +422,7 @@ sequenceDiagram
 
 ---
 
-### 3.3 Lấy chi tiết cuộc hội thoại (`GET /conversations/:id`)
+### 3.5 Lấy chi tiết cuộc hội thoại (`GET /conversations/:id`)
 > Lấy thông tin phòng chat theo ID. Bắt buộc user gọi phải là thành viên trong phòng.
 
 * **Method:** `GET`
@@ -391,8 +457,14 @@ sequenceDiagram
 
 ---
 
-### 3.4 Lấy lịch sử tin nhắn — Phân trang con trỏ (`GET /conversations/:id/messages`)
+### 3.6 Lấy lịch sử tin nhắn — Phân trang con trỏ (`GET /conversations/:id/messages`)
 > Phân trang bằng **con trỏ ID (UUIDv7)** thay vì offset page. Ổn định tuyệt đối khi có tin nhắn mới chèn vào.
+
+> [!IMPORTANT]
+> **Quy ước thứ tự tin nhắn (Timeline Sorting Contract):**
+> * Mảng `items` được Database và Backend trả về theo thứ tự thời gian giảm dần: **`createdAt DESC`** (phần tử `items[0]` là tin nhắn mới nhất, các tin cũ hơn xếp tiếp theo).
+> * **Cách phân trang:** `nextCursor` là `id` của tin nhắn cũ nhất ở cuối mảng `items`. Khi người dùng cuộn lên trên để tải thêm tin cũ hơn, client gửi query `cursor = nextCursor`.
+> * **Khuyến nghị hiển thị Client (Frontend / Mobile):** Để khung chat hiển thị tin nhắn xuôi theo trục thời gian (tin cũ ở trên, tin mới ở dưới), Client cần **đảo chiều mảng** (`items.slice().reverse()` hoặc sắp xếp `createdAt ASC`) trước khi render ra MessageList. Khi có tin nhắn mới đến từ Socket hoặc người dùng vừa gửi, luôn `append` vào cuối mảng xuôi này.
 
 * **Method:** `GET`
 * **Path:** `/api/conversations/:id/messages?cursor=<uuid_cuoi_cung>&limit=30`
@@ -432,7 +504,7 @@ sequenceDiagram
 
 ---
 
-### 3.5 Gửi tin nhắn mới (`POST /conversations/:id/messages`)
+### 3.7 Gửi tin nhắn mới (`POST /conversations/:id/messages`)
 > Gửi tin nhắn vào cuộc hội thoại. Có hỗ trợ chống gửi trùng (`clientMsgId` chuẩn UUID).
 
 * **Method:** `POST`
@@ -478,7 +550,7 @@ sequenceDiagram
 
 ---
 
-### 3.6 Chỉnh sửa tin nhắn (`PATCH /messages/:id`)
+### 3.8 Chỉnh sửa tin nhắn (`PATCH /messages/:id`)
 > Chỉ người gửi mới được sửa, chỉ áp dụng cho tin nhắn dạng `TEXT`.
 
 * **Method:** `PATCH`
@@ -512,7 +584,7 @@ sequenceDiagram
 
 ---
 
-### 3.7 Thu hồi tin nhắn (`DELETE /messages/:id`)
+### 3.9 Thu hồi tin nhắn (`DELETE /messages/:id`)
 > Thu hồi tin nhắn với mọi người (Soft delete: cập nhật `deletedAt = now()`). Cập nhật preview inbox thành `"Tin nhắn đã bị thu hồi"`.
 
 * **Method:** `DELETE`
@@ -537,7 +609,7 @@ sequenceDiagram
 
 ---
 
-### 3.8 Đánh dấu đã đọc (`POST /conversations/:id/read`)
+### 3.10 Đánh dấu đã đọc (`POST /conversations/:id/read`)
 > Client gọi khi user mở phòng chat hoặc scroll đọc tới tin nhắn mới. Reset unread counter trong Redis về 0.
 
 * **Method:** `POST`
@@ -607,7 +679,7 @@ sequenceDiagram
 ### 4.3 Sự kiện Server phát xuống (Server → Client)
 
 #### A. Tin nhắn mới (`message:new`)
-Server phát tới room `conv:{convId}` và room `user:{targetUserId}`:
+Server phát tới cả room cuộc hội thoại `conv:{convId}` và room cá nhân của người nhận `user:{targetUserId}`:
 ```json
 {
   "id": "0193a2b1-beef-1111-2222-333344445555",
@@ -620,6 +692,14 @@ Server phát tới room `conv:{convId}` và room `user:{targetUserId}`:
   "createdAt": "2026-10-16T16:32:00.000Z"
 }
 ```
+
+> [!NOTE]
+> **Cơ chế cập nhật hộp thư đến tự động (Inbox Auto-Discovery):**
+> * Việc phát tới room cá nhân `user:{targetUserId}` đảm bảo người nhận dù **chưa mở phòng chat** (hoặc nhận tin nhắn từ cuộc trò chuyện hoàn toàn mới chưa có trong danh sách Inbox) vẫn nhận được sự kiện ngay lập tức.
+> * **Xử lý phía Client:**
+>   1. Nếu `conversationId` đã có trong danh sách Inbox: cập nhật `lastMessagePreview`, `lastMessageAt`, và tăng `unreadCount`.
+>   2. Nếu `conversationId` chưa có trong danh sách Inbox (cuộc trò chuyện mới tinh): Client tự động gọi refetch danh sách (`invalidateQueries(['conversations'])`) và gọi `conv:join` để bắt đầu lắng nghe phòng chat mới này.
+>   3. Nếu client đang mở đúng phòng chat này: tự động gọi `POST /conversations/:id/read` để đánh dấu đã đọc.
 
 #### B. Sửa tin nhắn (`message:updated`)
 ```json
