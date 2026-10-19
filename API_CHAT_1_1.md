@@ -28,6 +28,7 @@
    - [3.9 Thu hồi tin nhắn (`DELETE /messages/:id`)](#39-thu-hồi-tin-nhắn-delete-messagesid)
    - [3.10 Đánh dấu đã đọc (`POST /conversations/:id/read`)](#310-đánh-dấu-đã-đọc-post-conversationsidread)
    - [3.11 Trả lời Story vào phòng chat 1-1 (`POST /stories/:id/reply`)](#311-trả-lời-story-vào-phòng-chat-1-1-post-storiesidreply)
+   - [3.12 Lời mời kết bạn, bạn bè và chính sách nhắn tin](#312-lời-mời-kết-bạn-bạn-bè-và-chính-sách-nhắn-tin)
 4. [Socket.IO Realtime Events](#4-socketio-realtime-events)
    - [4.1 Kết nối & Xác thực Handshake](#41-kết-nối--xác-thực-handshake)
    - [4.2 Sự kiện Client gửi lên (Client → Server)](#42-sự-kiện-client-gửi-lên-client--server)
@@ -126,6 +127,10 @@ sequenceDiagram
     Svc->>DB: Check target user tồn tại
     alt targetUser không tồn tại
         Svc-->>Ctrl: throw BusinessError("USER_NOT_FOUND") -> 404
+    end
+    Svc->>DB: Kiểm tra friendship status = ACCEPTED
+    alt Chưa là bạn hoặc đã bị chặn
+        Svc-->>Ctrl: throw FRIENDSHIP_REQUIRED / USER_BLOCKED -> 403
     end
     Svc->>Repo: findDirectByParticipants(userA, userB)
     alt Đã có cuộc hội thoại trước đó (Idempotent)
@@ -385,6 +390,8 @@ sequenceDiagram
   * `400 CANNOT_CHAT_WITH_SELF`: Không thể tự tạo chat với chính mình.
   * `401 UNAUTHORIZED`: Thiếu hoặc sai token xác thực.
   * `404 USER_NOT_FOUND`: Người dùng mục tiêu không tồn tại.
+  * `403 FRIENDSHIP_REQUIRED`: Chỉ bạn bè đã chấp nhận lời mời mới có thể bắt đầu chat.
+  * `403 USER_BLOCKED`: Một trong hai người đã chặn người còn lại.
   * `422 VALIDATION_ERROR`: `targetUserId` không đúng định dạng UUID.
 
 ---
@@ -463,15 +470,17 @@ sequenceDiagram
 
 > [!IMPORTANT]
 > **Quy ước thứ tự tin nhắn (Timeline Sorting Contract):**
-> * Mảng `items` được Database và Backend trả về theo thứ tự thời gian giảm dần: **`createdAt DESC`** (phần tử `items[0]` là tin nhắn mới nhất, các tin cũ hơn xếp tiếp theo).
+> * Khi không có `after`, mảng `items` được trả về mới nhất trước: **`createdAt DESC`**.
 > * **Cách phân trang:** `nextCursor` là `id` của tin nhắn cũ nhất ở cuối mảng `items`. Khi người dùng cuộn lên trên để tải thêm tin cũ hơn, client gửi query `cursor = nextCursor`.
-> * **Khuyến nghị hiển thị Client (Frontend / Mobile):** Để khung chat hiển thị tin nhắn xuôi theo trục thời gian (tin cũ ở trên, tin mới ở dưới), Client cần **đảo chiều mảng** (`items.slice().reverse()` hoặc sắp xếp `createdAt ASC`) trước khi render ra MessageList. Khi có tin nhắn mới đến từ Socket hoặc người dùng vừa gửi, luôn `append` vào cuối mảng xuôi này.
+> * Khi có `after`, backend trả các tin nhắn mới hơn theo thứ tự **`createdAt ASC`**; `nextCursor` là ID cuối trang để tiếp tục lấy các tin mới hơn.
+> * Client hiển thị lịch sử theo thứ tự cũ đến mới (**`createdAt ASC`**) dù mỗi hướng phân trang có thứ tự trả về khác nhau.
+> * Frontend giữ tối đa 5 trang trong cửa sổ cuộn, tải sẵn 2 trang cũ khi mở hội thoại và tải trang tiếp theo gần mép cuộn. Khi thêm trang cũ, client neo tin đang nhìn thấy để giữ nguyên vị trí; tin realtime được giữ riêng khỏi cursor phân trang và chỉ tự cuộn nếu người dùng đang ở cuối.
 
 * **Method:** `GET`
 * **Path:** `/api/conversations/:id/messages?cursor=<uuid_cuoi_cung>&limit=30`
   * `cursor` (tuỳ chọn): ID của tin nhắn cũ nhất đang có trên màn hình. Nếu không truyền -> Lấy tin nhắn mới nhất.
-  * `limit` (tuỳ chọn, mặc định 30, tối đa 100).
-  * `after` (tuỳ chọn): Dùng khi reconnect mạng để lấy những tin nhắn bị lỡ sau ID này.
+  * `limit` (tuỳ chọn, mặc định 30, tối đa 50).
+  * `after` (tuỳ chọn): Lấy trang tin nhắn mới hơn sau ID này, theo thứ tự tăng dần. Dùng để phân trang về phía tin mới hơn hoặc đồng bộ tin bị lỡ.
 * **Headers:** `Authorization: Bearer <access_token>`
 
 * **Response Success (200 OK):**
@@ -685,6 +694,31 @@ sequenceDiagram
   * `404 STORY_NOT_FOUND`: Story không tồn tại hoặc đã hết hạn.
   * `422 VALIDATION_ERROR`: Nội dung `body` bị rỗng hoặc vượt quá 4000 ký tự.
 
+### 3.12 Lời mời kết bạn, bạn bè và chính sách nhắn tin
+> Lemon hiện áp dụng chính sách **friends-only**: người chưa kết bạn có thể gửi lời mời kết bạn nhưng không thể tạo direct conversation, đọc lịch sử hoặc gửi tin nhắn. Chỉ khi người nhận chấp nhận lời mời mới mở được chat. Từ chối/hủy sẽ xóa lời mời đang chờ; block được lưu ở server và chặn lời mời/chat ở cả hai chiều.
+
+* **Gửi lời mời:** `POST /api/friends/requests`
+  ```json
+  { "userId": "0193a2b1-7c4d-7e8f-9a0b-1c2d3e4f5a6b" }
+  ```
+* **Lấy lời mời đến/đi:** `GET /api/friends/requests`
+  ```json
+  {
+    "success": true,
+    "message": "OK",
+    "data": {
+      "incoming": [{ "id": "request-uuid", "direction": "incoming", "createdAt": "2026-10-19T07:48:30.000Z", "user": { "id": "user-uuid", "name": "Nguyễn Văn Minh", "username": "minh_lemon", "email": "minh@lemon.dev", "avatarUrl": null } }],
+      "outgoing": []
+    }
+  }
+  ```
+* **Chấp nhận / từ chối lời mời đến:** `POST /api/friends/requests/:requestId/accept` hoặc `POST /api/friends/requests/:requestId/decline`.
+* **Hủy lời mời đã gửi:** `DELETE /api/friends/requests/:requestId`.
+* **Danh sách bạn bè đã chấp nhận:** `GET /api/friends` trả về mảng profile người bạn.
+* **Xóa bạn / chặn:** `DELETE /api/friends/:friendId` hoặc `POST /api/friends/:friendId/block`.
+
+Tất cả route cần access token. Các thao tác accept/decline/cancel chỉ được thực hiện bởi đúng người nhận/người gửi của request. Duplicate request, đã là bạn, request không còn tồn tại và trạng thái blocked được trả về thành lỗi thay vì giả lập dữ liệu thành công.
+
 ---
 
 ## 4. SOCKET.IO REALTIME EVENTS
@@ -804,6 +838,20 @@ Server phát tới cả room cuộc hội thoại `conv:{convId}` và room cá n
   "createdAt": "2026-10-19T10:00:00.000Z"
 }
 ```
+
+#### G. Lời mời kết bạn mới (`friend:request:new`)
+Server gửi sự kiện này đến room cá nhân `user:{recipientId}` ngay sau khi tạo một lời mời kết bạn mới. Request trùng lặp không phát lại sự kiện.
+```json
+{
+  "id": "0193a2b1-beef-1111-2222-333344445555",
+  "user": {
+    "id": "0193a2b1-7c4d-7e8f-9a0b-1c2d3e4f5a6a",
+    "name": "Nguyễn Văn A",
+    "username": "nguyenvana"
+  }
+}
+```
+Client nên refetch danh sách lời mời và hiển thị thông báo có bản dịch khi nhận event. Sự kiện chỉ phát cho người đang kết nối; dữ liệu khi offline được đồng bộ qua API khi mở ứng dụng.
 
 ---
 
