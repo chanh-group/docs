@@ -352,7 +352,7 @@ sequenceDiagram
 
 ### 5.2. Luồng Thả cảm xúc Story (React & Unreact Story)
 
-Người dùng có thể thả cảm xúc nhanh trên Story (`❤️`, `🔥`, `😂`, `😮`, `😢`, `👏`, `👍`):
+Người dùng có thể thả cảm xúc nhanh trên Story. Danh sách emoji được backend kiểm soát (allowlist trong `src/domain/story/constants.ts`): `👍`, `❤️`, `🥰`, `😆`, `😂`, `😮`, `😢`, `😡`, `🔥`, `👏`. Emoji ngoài danh sách bị từ chối ở tầng validation (422 `VALIDATION_ERROR`).
 
 ```mermaid
 sequenceDiagram
@@ -360,6 +360,8 @@ sequenceDiagram
     actor User as Bạn bè (Người xem)
     actor Owner as Chủ Story
     participant API as NestJS API (StoryService)
+    participant Conv as ConversationService
+    participant Msg as MessageService
     participant DB as PostgreSQL
     participant Cache as Redis Cache
     participant WS as Socket.IO Gateway
@@ -370,21 +372,31 @@ sequenceDiagram
     API->>DB: 2. markAsViewed(story.id, user.id)
     API->>DB: 3. UPSERT INTO story_reactions (story_id, user_id, emoji)
     API->>Cache: 4. Xóa feed cache: stories:feed:{user.id} & stories:feed:{owner.id}
-    API->>WS: 5. emit("story:reaction", payload) tới room user:{owner.id}
+    API->>WS: 5. emit("story:reaction", payload) tới room user:{owner.id} và user:{user.id}
     WS-->>Owner: Nhận realtime thông báo reaction kèm UserSummary và emoji
+    opt Reaction mới (chưa từng thả)
+        API->>Conv: 6. getOrCreateDirect(user.id, owner.id)
+        API->>Msg: 7. sendMessage(user.id, conv.id, { kind: "TEXT", body: "🔥" }, { storyId, storyPreview })
+        Msg->>DB: INSERT INTO messages (body = emoji, story_id, story_preview)
+        Msg->>WS: emit("message:new", messageResponse) tới room conv:{id}
+        WS-->>Owner: Nhận tin nhắn cảm xúc kèm snapshot preview của Story trong phòng chat 1:1
+    end
     API-->>User: 200 OK { success: true, message: "Đã bày tỏ cảm xúc về story", data: { storyId, emoji, createdAt } }
 
     %% B. Unreact Story
     User->>API: DELETE /stories/:id/react
     API->>DB: DELETE FROM story_reactions WHERE story_id = :id AND user_id = :user.id
     API->>Cache: Xóa feed cache của user và chủ story
+    API->>WS: emit("story:reaction:removed", payload) tới room user:{owner.id} và user:{user.id}
     API-->>User: 200 OK { success: true, message: "Đã gỡ cảm xúc khỏi story" }
 
     %% C. Xem danh sách cảm xúc (Chỉ chủ Story)
-    Owner->>API: GET /stories/:id/reactions
+    Owner->>API: GET /stories/:id/reactions?cursor=&limit=
     API->>DB: SELECT u.*, r.emoji, r.created_at FROM story_reactions r JOIN users u ...
-    API-->>Owner: 200 OK { success: true, message: "OK", data: [ { user, emoji, createdAt } ] }
+    API-->>Owner: 200 OK { success: true, message: "OK", data: { items: [ { user, emoji, createdAt } ], nextCursor?, hasMore } }
 ```
+
+> **Lưu ý về DM mirror**: reaction mới được đưa vào phòng chat 1:1 giữa người thả và chủ Story (đúng triết lý "mọi tương tác phản hồi → Tin nhắn riêng"). Đổi biểu cảm trên cùng story chỉ cập nhật row `story_reactions`, **không** gửi thêm tin nhắn; gỡ biểu cảm cũng không gửi tin nhắn (tin nhắn đã gửi vẫn còn trong lịch sử chat).
 
 ---
 
@@ -395,7 +407,7 @@ sequenceDiagram
 CREATE TABLE story_reactions (
   story_id   UUID NOT NULL REFERENCES stories(id) ON DELETE CASCADE,
   user_id    UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-  emoji      TEXT NOT NULL, -- "❤️", "🔥", "😂", "😮", "😢", "👏", "👍"
+  emoji      TEXT NOT NULL, -- "👍", "❤️", "🥰", "😆", "😂", "😮", "😢", "😡", "🔥", "👏"
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   PRIMARY KEY (story_id, user_id)
 );
@@ -423,9 +435,9 @@ CREATE INDEX messages_story_idx ON messages(story_id);
 | `GET` | `/stories/:id` | Bạn bè / Chủ story | Xem chi tiết 1 Story (kèm `hasViewed`, `myReaction`, `reactionsCount`). |
 | `POST` | `/stories/:id/view` | Bạn bè | Đánh dấu đã xem Story. |
 | `GET` | `/stories/:id/views` | **Chỉ chủ Story** | Xem danh sách người đã xem (kèm biểu cảm `reaction` nếu có). |
-| `POST` | `/stories/:id/react` | Bạn bè | Thả / cập nhật cảm xúc trên Story (`❤️`, `🔥`, `😂`, `😮`, `😢`, `👏`, `👍`). |
+| `POST` | `/stories/:id/react` | Bạn bè | Thả / cập nhật cảm xúc trên Story (`👍`, `❤️`, `🥰`, `😆`, `😂`, `😮`, `😢`, `😡`, `🔥`, `👏`). Reaction mới được mirror vào phòng chat 1:1 với chủ Story. |
 | `DELETE` | `/stories/:id/react` | Bạn bè | Gỡ cảm xúc khỏi Story. |
-| `GET` | `/stories/:id/reactions` | **Chỉ chủ Story** | Xem danh sách chi tiết các biểu cảm trên Story. |
+| `GET` | `/stories/:id/reactions` | **Chỉ chủ Story** | Xem danh sách chi tiết các biểu cảm trên Story (cursor pagination: `cursor`, `limit`). |
 | `POST` | `/stories/:id/reply` | Bạn bè | Trả lời Story thành tin nhắn 1:1 trong phòng chat DIRECT. |
 | `DELETE` | `/stories/:id` | **Chỉ chủ Story** | Xóa Story chủ động (tombstone `deleted_at`, dọn S3 qua Purge Job). |
 | `PUT` | `/notes` | Auth User | Upsert Note trạng thái (tối đa 1 note active / user). |
@@ -438,11 +450,12 @@ CREATE INDEX messages_story_idx ON messages(story_id);
 |:---:|---|---|
 | `400` | `INVALID_MEDIA_TYPE` | Định dạng file không được hỗ trợ cho Story. |
 | `400` | `FILE_TOO_LARGE` | Dung lượng file vượt quá giới hạn (Ảnh > 10MB, Video > 50MB). |
-| `400` | `INVALID_EMOJI` | Biểu cảm không hợp lệ (chỉ chấp nhận các icon story chuẩn). |
+| `422` | `VALIDATION_ERROR` | Biểu cảm không nằm trong allowlist (`VALIDATION_ENUM`) hoặc body rời story vượt giới hạn. |
 | `400` | `CANNOT_REACT_OWN_STORY` | Bạn không thể tự bày tỏ cảm xúc story của chính mình. |
 | `400` | `CANNOT_REPLY_OWN_STORY` | Bạn không thể tự trả lời story của chính mình. |
 | `403` | `STORY_VIEW_FORBIDDEN` | Bạn chỉ có thể xem story của bạn bè hoặc chính mình. |
-| `403` | `STORY_VIEWERS_FORBIDDEN` | Chỉ người đăng story mới có thể xem danh sách người xem / reactions. |
+| `403` | `STORY_VIEWERS_FORBIDDEN` | Chỉ người đăng story mới có thể xem danh sách người xem. |
+| `403` | `STORY_REACTIONS_FORBIDDEN` | Chỉ người đăng story mới có thể xem danh sách biểu cảm. |
 | `403` | `STORY_REACT_FORBIDDEN` | Bạn chỉ có thể bày tỏ cảm xúc story của bạn bè. |
 | `403` | `STORY_REPLY_FORBIDDEN` | Bạn chỉ có thể trả lời story của bạn bè. |
 | `403` | `STORY_DELETE_FORBIDDEN` | Chỉ chủ sở hữu mới có quyền xóa story. |
