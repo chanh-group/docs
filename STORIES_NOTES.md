@@ -319,7 +319,7 @@ sequenceDiagram
 Khi bạn bè gõ chữ trả lời Story (`POST /stories/:id/reply`), hệ thống tự động:
 1. Đánh dấu người trả lời đã xem Story (`markAsViewed`).
 2. Lấy hoặc tạo phòng hội thoại 1:1 (`conversations` DIRECT) giữa người trả lời và chủ sở hữu Story (`getOrCreateDirect`).
-3. Chèn bản ghi tin nhắn mới vào bảng `messages` với snapshot preview của Story (`story_id` và `story_preview`), cập nhật snippet `last_message_preview` cho hội thoại.
+3. Chèn bản ghi tin nhắn mới vào bảng `messages` với `kind = 'STORY_REPLY'` và snapshot preview của Story (`story_id` và `story_preview`), cập nhật snippet `last_message_preview` cho hội thoại.
 4. Tăng unread counter trong Redis cho người nhận và phát sự kiện Socket.IO `message:new` tới room `conv:{id}`.
 
 ```mermaid
@@ -339,7 +339,7 @@ sequenceDiagram
     API->>Conv: 3. getOrCreateDirect(viewer.id, owner.id)
     Conv->>DB: Lấy hoặc tạo conversation DIRECT
     Conv-->>API: Conversation entity
-    API->>Msg: 4. sendMessage(viewer.id, conv.id, { kind: "TEXT", body, storyId, storyPreview })
+    API->>Msg: 4. sendMessage(viewer.id, conv.id, { kind: "TEXT", body }, { kind: "STORY_REPLY", storyId, storyPreview })
     Msg->>DB: INSERT INTO messages (kind, body, story_id, story_preview, ...)
     Msg->>DB: UPDATE conversations SET last_message_preview, last_message_id, ...
     Msg->>WS: emit("message:new", messageResponse) to room conv:{id}
@@ -376,7 +376,7 @@ sequenceDiagram
     WS-->>Owner: Nhận realtime thông báo reaction kèm UserSummary và emoji
     opt Reaction mới (chưa từng thả)
         API->>Conv: 6. getOrCreateDirect(user.id, owner.id)
-        API->>Msg: 7. sendMessage(user.id, conv.id, { kind: "TEXT", body: "🔥" }, { storyId, storyPreview })
+        API->>Msg: 7. sendMessage(user.id, conv.id, { kind: "TEXT", body: "🔥" }, { kind: "STORY_REACTION", storyId, storyPreview })
         Msg->>DB: INSERT INTO messages (body = emoji, story_id, story_preview)
         Msg->>WS: emit("message:new", messageResponse) tới room conv:{id}
         WS-->>Owner: Nhận tin nhắn cảm xúc kèm snapshot preview của Story trong phòng chat 1:1
@@ -396,19 +396,24 @@ sequenceDiagram
     API-->>Owner: 200 OK { success: true, message: "OK", data: { items: [ { user, emoji, createdAt } ], nextCursor?, hasMore } }
 ```
 
-> **Lưu ý về DM mirror**: reaction mới được đưa vào phòng chat 1:1 giữa người thả và chủ Story (đúng triết lý "mọi tương tác phản hồi → Tin nhắn riêng"). Đổi biểu cảm trên cùng story chỉ cập nhật row `story_reactions`, **không** gửi thêm tin nhắn; gỡ biểu cảm cũng không gửi tin nhắn (tin nhắn đã gửi vẫn còn trong lịch sử chat).
+> **Lưu ý về DM mirror**: reaction mới được đưa vào phòng chat 1:1 giữa người thả và chủ Story (đúng triết lý "mọi tương tác phản hồi → Tin nhắn riêng"). Tin nhắn này có `kind = 'STORY_REACTION'` (body = emoji, kèm snapshot story) để client render đúng kiểu; preview hội thoại lưu marker `[story-reaction]`. Mirror là **best effort**: lỗi chat không làm fail request (reaction đã lưu vẫn thành công). Đổi biểu cảm trên cùng story chỉ cập nhật row `story_reactions` (`updated_at`), **không** gửi thêm tin nhắn; gỡ biểu cảm cũng không gửi tin nhắn (tin nhắn đã gửi vẫn còn trong lịch sử chat).
 
 ---
 
 ### 5.3. Mô hình dữ liệu mở rộng
 
 ```sql
+-- 0. Kiểu tin nhắn mới cho tương tác Story (client render riêng, không phải tin nhắn text)
+ALTER TYPE message_kind ADD VALUE 'STORY_REPLY';
+ALTER TYPE message_kind ADD VALUE 'STORY_REACTION';
+
 -- 1. Bảng cảm xúc trên Story (mỗi user tối đa 1 reaction active / story)
 CREATE TABLE story_reactions (
   story_id   UUID NOT NULL REFERENCES stories(id) ON DELETE CASCADE,
   user_id    UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   emoji      TEXT NOT NULL, -- "👍", "❤️", "🥰", "😆", "😂", "😮", "😢", "😡", "🔥", "👏"
-  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(), -- bất biến: thời điểm thả lần đầu (sort key ổn định)
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(), -- lần đổi emoji gần nhất
   PRIMARY KEY (story_id, user_id)
 );
 CREATE INDEX story_reactions_story_idx ON story_reactions(story_id);
@@ -431,7 +436,7 @@ CREATE INDEX messages_story_idx ON messages(story_id);
 | Phương thức | Endpoint Path | Quyền truy cập | Mô tả tóm tắt |
 |:---:|---|---|---|
 | `POST` | `/stories` | Auth User | Đăng Story mới (`IMAGE`, `VIDEO`, hoặc `TEXT`). |
-| `GET` | `/stories/feed` | Auth User | Lấy danh sách Story còn hạn của bạn bè & bản thân (kèm `myReaction`, `reactionsCount`). |
+| `GET` | `/stories/feed` | Auth User | Lấy danh sách Story còn hạn của bạn bè & bản thân (kèm `hasViewed`, `myReaction`). Feed được cache 60s nên **không** chứa `reactionsCount` (aggregate đổi theo người khác). |
 | `GET` | `/stories/:id` | Bạn bè / Chủ story | Xem chi tiết 1 Story (kèm `hasViewed`, `myReaction`, `reactionsCount`). |
 | `POST` | `/stories/:id/view` | Bạn bè | Đánh dấu đã xem Story. |
 | `GET` | `/stories/:id/views` | **Chỉ chủ Story** | Xem danh sách người đã xem (kèm biểu cảm `reaction` nếu có). |
