@@ -6,15 +6,9 @@ variables:
   - name: access_token
     value: ""
     description: JWT access token returned by Login
-  - name: refresh_token
-    value: ""
-    description: Optional refresh token when not using Bruno's cookie jar
   - name: language
     value: vi
     description: Value for the Accept-Language header
-  - name: request_id
-    value: lemonchat-docs
-    description: Optional idempotency or request tracing value
   - name: email
     value: user@example.com
     description: Account email used by auth requests

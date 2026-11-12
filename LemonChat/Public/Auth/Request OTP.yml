@@ -6,11 +6,6 @@ info:
 http:
   method: POST
   url: "{{base_url}}/api/auth/request-otp"
-  headers:
-    - name: x-request-id
-      value: "{{request_id}}"
-      description: Optional request identifier
-      disabled: true
   body:
     type: json
     data: |-

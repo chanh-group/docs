@@ -474,7 +474,7 @@ sequenceDiagram
 > * **Cách phân trang:** `nextCursor` là `id` của tin nhắn cũ nhất ở cuối mảng `items`. Khi người dùng cuộn lên trên để tải thêm tin cũ hơn, client gửi query `cursor = nextCursor`.
 > * Khi có `after`, backend trả các tin nhắn mới hơn theo thứ tự **`createdAt ASC`**; `nextCursor` là ID cuối trang để tiếp tục lấy các tin mới hơn.
 > * Client hiển thị lịch sử theo thứ tự cũ đến mới (**`createdAt ASC`**) dù mỗi hướng phân trang có thứ tự trả về khác nhau.
-> * Frontend giữ tối đa 5 trang trong cửa sổ cuộn, tải sẵn 2 trang cũ khi mở hội thoại và tải trang tiếp theo gần mép cuộn. Khi thêm trang cũ, client neo tin đang nhìn thấy để giữ nguyên vị trí; tin realtime được giữ riêng khỏi cursor phân trang và chỉ tự cuộn nếu người dùng đang ở cuối.
+> * Frontend giữ cửa sổ 3 trang (-1, 0, +1) trong khi cuộn, tải sẵn 3 trang (trang hiện tại + 2 trang cũ) khi mở hội thoại và tải trang kế tiếp khi còn cách mép ~1.5 màn hình. Khi thêm trang cũ, client neo tin đang nhìn thấy để giữ nguyên vị trí; tin realtime được giữ riêng khỏi cursor phân trang và chỉ tự cuộn nếu người dùng đang ở cuối.
 
 * **Method:** `GET`
 * **Path:** `/api/conversations/:id/messages?cursor=<uuid_cuoi_cung>&limit=30`
