@@ -28,9 +28,22 @@ Phát triển feature mới:
       - Ngăn Quyền riêng tư & Quản lý: Hủy kết bạn và chặn người dùng có Modal xác nhận song ngữ, tự động phát sự kiện Socket realtime friend:removed.
       - Backend Storage: Nâng thời hạn S3/R2 presigned URL lên 24 giờ (86400s) loại bỏ triệt để lỗi ExpiredRequest.
       - Đảm bảo kiểm thử 100% passed (Backend: 772/772 tests, Frontend: 90/90 tests, 0 lint warnings).
-  0. Group chat (An)
-  1. Chức năng voice call direct (Hiệu)
-  2. Chức năng video call direct (Hiệu)
+  0. API & Giao diện Tìm kiếm tin nhắn trong cuộc trò chuyện (Message Search): (An) [ ] (Kế hoạch thực hiện)
+      - Backend API (REST Endpoint):
+        + Xây dựng endpoint: `GET /api/conversations/:id/messages/search?q={keyword}&limit={limit}&cursor={cursor}`.
+        + Xác thực & phân quyền: Kiểm tra người gọi bắt buộc phải là thành viên hợp lệ của cuộc hội thoại (`conversationId`).
+        + Bộ lọc & Thuật toán tìm kiếm: Tìm kiếm từ khóa theo chuỗi văn bản (`body`), hỗ trợ tiếng Việt không dấu/có dấu (PostgreSQL `ILIKE` / Full-Text Search với `unaccent`), loại trừ các tin nhắn đã bị thu hồi (`deletedAt IS NULL`).
+        + Kết quả trả về: Danh sách tin nhắn khớp từ khóa kèm thông tin người gửi, mốc thời gian, tệp đính kèm và con trỏ phân trang `nextCursor` cho danh sách dài.
+        + Tối ưu cơ sở dữ liệu: Đảm bảo index trên `(conversation_id, created_at)` và cân nhắc GIN/Trigram index trên nội dung tin nhắn để tối ưu tốc độ phản hồi < 50ms.
+      - Frontend UI/UX:
+        + Tích hợp trực tiếp vào nút Quick Action "Tìm kiếm" trên Header và trong Chat Info Panel.
+        + Thanh tìm kiếm dạng popover/floating bar phía trên khung tin nhắn với debounce nhập liệu (300ms) và phím tắt `Esc` để đóng.
+        + Danh sách kết quả tìm kiếm kèm trích đoạn tin nhắn và highlight từ khóa khớp.
+        + Tính năng Scroll-to-Message: Khi nhấp vào một kết quả tìm kiếm, tự động cuộn dòng thời gian tới đúng tin nhắn đó và kích hoạt hiệu ứng nhấp nháy sáng (highlight flash animation) để người dùng nhận diện ngay ngữ cảnh tin nhắn.
+        + Điều hướng kết quả: Hỗ trợ bộ đếm kết quả (ví dụ `1/12`) kèm nút mũi tên Lên/Xuống để chuyển tiếp nhanh giữa các tin nhắn tìm được.
+  1. Group chat (An)
+  2. Chức năng voice call direct (Hiệu)
+  3. Chức năng video call direct (Hiệu)
 
   Tương lai:
   1. Call group
