@@ -853,6 +853,15 @@ Server gửi sự kiện này đến room cá nhân `user:{recipientId}` ngay sa
 ```
 Client nên refetch danh sách lời mời và hiển thị thông báo có bản dịch khi nhận event. Sự kiện chỉ phát cho người đang kết nối; dữ liệu khi offline được đồng bộ qua API khi mở ứng dụng.
 
+#### H. Hủy kết bạn (`friend:removed`)
+Server phát tới room cá nhân `user:{userIdA}` và `user:{userIdB}` của cả 2 phía khi một trong hai người thực hiện thao tác hủy kết bạn qua `DELETE /api/friends/:friendId`:
+```json
+{
+  "friendId": "0193a2b1-7c4d-7e8f-9a0b-1c2d3e4f5a6b"
+}
+```
+Client lắng nghe sự kiện này để tự động làm mới danh sách bạn bè (`invalidateQueries(['friends'])`), cập nhật trạng thái bạn bè trên thanh thông tin hội thoại và điều hướng nếu cần thiết.
+
 ---
 
 ## 5. HƯỚNG DẪN FRONTEND TÍCH HỢP (CODE MẪU REACT)

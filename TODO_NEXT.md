@@ -13,7 +13,21 @@ Tuần tới chúng ta bắt tay vào fix các lỗi:
   11. Design lại màn tạo tin, sửa conflict và push mới 2 màn voice call và video call để mọi người ở core test chức năng sớm nhất có thể (Công)
 
 Phát triển feature mới:
-  -1. Thông tin cuộc trò chuyền. Bao gồm: .... (An)
+  -1. Thông tin cuộc trò chuyện (Chat Info Panel): (An) [x] (Đã hoàn thành toàn diện)
+      - Header thông tin hội thoại: Avatar người dùng, tên hiển thị, trạng thái online, bio.
+      - 3 nút thao tác nhanh (Quick Actions):
+        + Trang cá nhân: Thẻ UserProfileDialog chuẩn hóa hiển thị @username kèm nút sao chép nhanh, nhãn bạn bè [✓ Bạn bè], bio, 2 nút hủy kết bạn và chặn người dùng (loại bỏ hoàn toàn ID thô UUID).
+        + Tắt/bật thông báo: Tích hợp hook useConversationMute (single source of truth), loại bỏ nút trùng lặp ở ngăn dưới.
+        + Tìm kiếm: Gắn thông báo phản hồi tính năng đang phát triển.
+      - Bố cục Drawer co giãn: Cho phép kéo thả thay đổi độ rộng panel trên desktop (280px - 600px), lưu và khôi phục từ localStorage, tương thích tối đa Light/Dark theme.
+      - Kho lưu trữ Media & File:
+        + Sắp xếp đảo ngược theo thứ tự thời gian (từ mới nhất đến cũ nhất).
+        + Giới hạn số lượng hiển thị khoa học (6 media, 4 file) kèm nút bấm "Xem tất cả (N)" / "Thu gọn".
+        + Video thumbnail tự động sinh poster qua <video preload="metadata">, overlay nút Play và nhãn VIDEO/duration.
+        + Xem video trực tiếp trên trình duyệt qua ImageLightboxModal toàn màn hình (HTML5 controls, autoPlay, tải về, phím Esc) và nút xem toàn màn hình trong tin nhắn chat.
+      - Ngăn Quyền riêng tư & Quản lý: Hủy kết bạn và chặn người dùng có Modal xác nhận song ngữ, tự động phát sự kiện Socket realtime friend:removed.
+      - Backend Storage: Nâng thời hạn S3/R2 presigned URL lên 24 giờ (86400s) loại bỏ triệt để lỗi ExpiredRequest.
+      - Đảm bảo kiểm thử 100% passed (Backend: 772/772 tests, Frontend: 90/90 tests, 0 lint warnings).
   0. Group chat (An)
   1. Chức năng voice call direct (Hiệu)
   2. Chức năng video call direct (Hiệu)
