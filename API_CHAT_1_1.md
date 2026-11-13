@@ -29,6 +29,7 @@
    - [3.10 Đánh dấu đã đọc (`POST /conversations/:id/read`)](#310-đánh-dấu-đã-đọc-post-conversationsidread)
    - [3.11 Trả lời Story vào phòng chat 1-1 (`POST /stories/:id/reply`)](#311-trả-lời-story-vào-phòng-chat-1-1-post-storiesidreply)
    - [3.12 Lời mời kết bạn, bạn bè và chính sách nhắn tin](#312-lời-mời-kết-bạn-bạn-bè-và-chính-sách-nhắn-tin)
+   - [3.13 Tìm kiếm tin nhắn trong cuộc trò chuyện (`GET /conversations/:id/messages/search`)](#313-tìm-kiếm-tin-nhắn-trong-cuộc-trò-chuyện-get-conversationsidmessagessearch)
 4. [Socket.IO Realtime Events](#4-socketio-realtime-events)
    - [4.1 Kết nối & Xác thực Handshake](#41-kết-nối--xác-thực-handshake)
    - [4.2 Sự kiện Client gửi lên (Client → Server)](#42-sự-kiện-client-gửi-lên-client--server)
@@ -721,6 +722,46 @@ Tất cả route cần access token. Các thao tác accept/decline/cancel chỉ 
 
 ---
 
+### 3.13 Tìm kiếm tin nhắn trong cuộc trò chuyện (`GET /conversations/:id/messages/search`)
+
+* **Endpoint:** `GET /api/conversations/:id/messages/search`
+* **Mô tả:** Tìm kiếm các tin nhắn có chứa từ khóa trong phạm vi cuộc hội thoại được chỉ định. Chỉ thành viên của cuộc hội thoại mới có quyền thực hiện tìm kiếm.
+* **Headers:** `Authorization: Bearer <AccessToken>`
+* **Query Parameters:**
+  * `q` (bắt buộc): Từ khóa tìm kiếm (chuỗi ký tự, min 1, max 100). Hỗ trợ tìm kiếm theo tiếng Việt có dấu và không dấu (sử dụng unaccent / full-text search).
+  * `limit` (tùy chọn): Số lượng kết quả trả về tối đa (mặc định: `20`, tối đa: `50`).
+  * `cursor` (tùy chọn): Con trỏ ID tin nhắn hoặc timestamp để lấy trang kết quả tiếp theo.
+* **Response Thành công (200 OK):**
+  ```json
+  {
+    "success": true,
+    "message": "OK",
+    "data": {
+      "items": [
+        {
+          "id": "0193a2b1-beef-1111-2222-333344445555",
+          "conversationId": "0193a2b1-8888-7777-9999-1c2d3e4f5a6b",
+          "senderId": "0193a2b1-7c4d-7e8f-9a0b-1c2d3e4f5a6a",
+          "senderName": "Trần Minh",
+          "senderAvatar": "https://...",
+          "text": "Báo cáo tiến độ đồ án tuần này đã xong nhé",
+          "kind": "TEXT",
+          "createdAt": "2026-11-12T10:30:00.000Z",
+          "attachments": []
+        }
+      ],
+      "nextCursor": "0193a2b1-beef-1111-2222-333344445555",
+      "totalMatches": 1
+    }
+  }
+  ```
+* **Lỗi có thể trả về:**
+  * `400 BAD_REQUEST`: Thiếu query `q` hoặc từ khóa tìm kiếm rỗng.
+  * `403 FORBIDDEN`: Người dùng hiện tại không phải thành viên tham gia cuộc trò chuyện.
+  * `404 NOT_FOUND`: Không tìm thấy cuộc trò chuyện (`CONVERSATION_NOT_FOUND`).
+
+---
+
 ## 4. SOCKET.IO REALTIME EVENTS
 
 ### 4.1 Kết nối & Xác thực Handshake
@@ -852,6 +893,15 @@ Server gửi sự kiện này đến room cá nhân `user:{recipientId}` ngay sa
 }
 ```
 Client nên refetch danh sách lời mời và hiển thị thông báo có bản dịch khi nhận event. Sự kiện chỉ phát cho người đang kết nối; dữ liệu khi offline được đồng bộ qua API khi mở ứng dụng.
+
+#### H. Hủy kết bạn (`friend:removed`)
+Server phát tới room cá nhân `user:{userIdA}` và `user:{userIdB}` của cả 2 phía khi một trong hai người thực hiện thao tác hủy kết bạn qua `DELETE /api/friends/:friendId`:
+```json
+{
+  "friendId": "0193a2b1-7c4d-7e8f-9a0b-1c2d3e4f5a6b"
+}
+```
+Client lắng nghe sự kiện này để tự động làm mới danh sách bạn bè (`invalidateQueries(['friends'])`), cập nhật trạng thái bạn bè trên thanh thông tin hội thoại và điều hướng nếu cần thiết.
 
 ---
 
