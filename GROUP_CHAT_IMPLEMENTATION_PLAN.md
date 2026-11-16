@@ -1,6 +1,6 @@
 # Kế hoạch triển khai Group Chat — LemonChat
 
-> Trạng thái: luồng group chat chưa triển khai; schema và một phần UI đã có sẵn. Đối chiếu lại với branch `feat/group-chat` của `lemon-ui` và `lemon-backend` ngày 16/11/2026, sau các commit BE `8a36958` và UI `a757953` về xóa/sửa tin nhắn.
+> Trạng thái: phần triển khai BE/UI đã hoàn tất trên branch `feat/group-chat`; migration 0021–0022 đã áp dụng thành công vào database development đang cấu hình. Unit test, quality gate và từng E2E suite đều đạt khi chạy riêng; lượt E2E tổng hợp gần nhất bị Redis remote timeout ở bước khởi tạo direct-chat. Vẫn cần nghiệm thu realtime đa tab/reconnect, mobile, media trước phát hành. Đối chiếu ban đầu ngày 16/11/2026, sau các commit BE `8a36958` và UI `a757953` về xóa/sửa tin nhắn.
 >
 > Phạm vi: chat nhóm trên web và API/realtime tương ứng. Cuộc gọi nhóm, lời mời bằng liên kết, thông báo đẩy và nhóm công khai là hạng mục riêng.
 
@@ -31,7 +31,7 @@ Các giá trị dưới đây là mặc định để có thể triển khai; x�
 
 - Tạo **nhóm mới độc lập**, không chuyển chat 1–1 sang nhóm hoặc tự chia sẻ lịch sử 1–1. Người tạo chọn tối thiểu **2 bạn bè khác** (tổng 3 người); tối đa **10 người kể cả chủ nhóm**. Đặt giới hạn trong constants BE và dùng cùng hợp đồng ở UI. Tên trim, dài 1–80 ký tự. `memberIds` không được trùng, chứa chính mình, tài khoản không hoạt động hoặc không phải bạn bè; không cho thêm người có quan hệ chặn theo quy tắc sản phẩm.
 - Tạo nhiều nhóm có cùng tập thành viên được phép; mỗi lần tạo là một cuộc hội thoại riêng. Chống tạo trùng do double submit bằng idempotency key dành cho thao tác tạo nhóm (khác `clientMsgId` của tin nhắn).
-- Hủy kết bạn sau khi vào nhóm không tự động xóa thành viên khỏi nhóm; quyền nhóm dựa trên membership. Quan hệ chặn giữa hai thành viên sau khi nhóm đã tồn tại cần chốt ở mục 9 để không vô tình biến nhóm thành đường vòng né tính năng chặn.
+- Hủy kết bạn sau khi vào nhóm không tự động xóa thành viên khỏi nhóm; quyền nhóm dựa trên membership. Theo quyết định của chủ sản phẩm ngày 16/11/2026, nếu hai người chặn nhau sau khi đã cùng nhóm thì họ vẫn ở trong nhóm, xem và gửi tin nhóm. Kiểm tra chặn vẫn áp dụng cho chat trực tiếp; không cho thêm người chưa phải bạn bè vào nhóm.
 - Người tạo là `OWNER`; người được thêm là `MEMBER`. `OWNER` và `ADMIN` được đổi tên/avatar và thêm thành viên; chỉ `OWNER` được xóa người khác, đổi vai trò, chuyển quyền sở hữu. Thành viên được tự rời. Không cho tự xóa `OWNER`; nếu owner rời khi còn người khác, phải chuyển quyền trước. Khi chỉ còn owner, `leave` sẽ đóng mềm nhóm trong cùng transaction để không để nhóm không chủ. Chuyển quyền sở hữu hạ owner cũ thành `ADMIN`.
 - Người mới hoặc được thêm lại chỉ thấy tin nhắn từ lần tham gia hiện tại. `joinedAt` hiện chỉ là timestamp; mốc A phải chọn ranh giới lịch sử **bền vững, có thứ tự toàn phần** (ví dụ sequence tăng theo conversation lưu trong participant) và đồng bộ nó với transaction gửi/thêm thành viên. Không dùng thời gian ở client hoặc `now()` của transaction làm ranh giới duy nhất; kiểm thử tin gửi đồng thời và tin trùng timestamp. Người rời hoặc bị xóa mất quyền xem nhóm ngay, bao gồm lịch sử cũ, reply/forward từ nhóm, API tệp và socket. Thành viên đang hoạt động không mất quyền xem tin cũ khi người gửi rời nhóm.
 - Sau khi nhóm co lại còn 1–2 người, vẫn giữ `GROUP`, không tự đổi sang `DIRECT`. Khi chỉ còn owner, UI hiện trạng thái nhóm trống và cho thêm người hoặc đóng nhóm.
@@ -139,7 +139,18 @@ Có thể chia PR nhỏ theo mốc để review, nhưng mỗi mốc phải giữ
 3. Có cần thu hồi **ngay lập tức** link tải tệp đã cấp khi thành viên bị xóa không? Nếu có, cần thay cơ chế tải hiện tại, không chỉ giảm TTL.
 4. Bản đầu có cần avatar tùy chỉnh, quyền `ADMIN`, thông báo hệ thống “A thêm B”, hay chỉ tạo nhóm + nhắn tin + rời nhóm? Những phần này có thể triển khai theo mốc sau mà vẫn giữ hợp đồng mở rộng.
 5. Quy tắc xử lý owner cuối cùng: bản kế hoạch mặc định `POST /leave` đóng mềm nhóm khi chỉ còn owner, và owner cũ trở thành `ADMIN` khi chuyển quyền; cần xác nhận thời hạn giữ lịch sử nhóm đã đóng.
-6. Khi A chặn B sau khi cả hai đã ở cùng nhóm, A/B còn được thấy tin và tương tác trong nhóm không? Kế hoạch chưa tự suy diễn quy tắc này từ `assertCanChat` của direct; cần chốt để API, socket và UI cho cùng một kết quả.
+6. Đã chốt: nếu A chặn B sau khi cả hai đã ở cùng nhóm, cả hai vẫn ở trong nhóm, xem và gửi tin nhóm. Quy tắc này không thay đổi việc kiểm tra chặn ở chat trực tiếp và không cho mời người không phải bạn bè.
+
+### Tiến độ triển khai
+
+- Đã triển khai: migration cho creator/idempotency/history boundary; API nhóm và ma trận quyền; giới hạn 10 người; mốc lịch sử cho timeline/unread/preview/reply/forward; sender profile; typing và cache realtime; wizard, metadata và panel thành viên VI/EN; ẩn gọi thoại/video nhóm. Người bị chặn sau khi cùng vào nhóm vẫn ở lại và có thể xem/gửi tin nhóm.
+- Migration: `bun run db:migrate` đã áp 0021–0022 thành công; chạy lại sau đó cũng hoàn tất thành công.
+- Kiểm tra UI ngày 16/11/2026: build, lint, kiểm tra format trong `src/` và Vitest đều đạt; 20 file, 132 test passed. Build phát cảnh báo bundle JavaScript lớn hơn 500 KB.
+- Kiểm tra BE ngày 16/11/2026: typecheck, lint, format, build đều đạt; toàn bộ unit test đạt 77 file/813 test; sau sửa truy vấn, test repository conversation/message đạt 34 test và E2E group chat đạt 1/1.
+- E2E hồi quy: group chat 1/1, direct chat 29/29 khi chạy riêng với timeout 30 giây, socket/readiness/Redis 11/11, story flow 5/5 sau khi nâng timeout của luồng nhiều request lên 90 giây, auth-version 4/4 sau khi mô phỏng lỗi trên kết nối listener và kiểm tra socket ngắt/kết nối lại. Kiểm thử ngắt PostgreSQL bằng PID qua pooler đã được thay bằng mô phỏng lỗi kết nối listener để kiểm tra hành vi phục hồi một cách xác định.
+- Lượt E2E tổng hợp gần nhất: 6/7 suite và 21 test đạt; 29 test direct chat bị bỏ qua vì Redis remote không trả lời PING trong giới hạn khởi tạo, và cleanup của suite sau đó đã được bảo vệ khi setup thất bại. Direct chat đã đạt 29/29 trong lượt riêng trước đó. E2E hiện dùng dịch vụ development cấu hình trong `.env`, chưa có PostgreSQL/Redis test tách biệt.
+- Chưa nghiệm thu: một lượt E2E tổng hợp xanh ổn định trên hạ tầng test riêng, realtime đa tab/reconnect của Group Chat, và kiểm thử mobile thủ công.
+- Tải media hiện dùng URL presign có thời hạn 24 giờ; xóa thành viên không thu hồi được URL đã phát hành. Cần thay đổi cơ chế tải nếu sản phẩm yêu cầu thu hồi quyền tức thì; hiện tại đây là giới hạn cần xử lý trước khi tuyên bố đạt nghiệm thu bảo mật media.
 
 ## 10. Nguồn tham khảo
 
