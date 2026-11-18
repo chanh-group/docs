@@ -2,10 +2,10 @@
 
 > **Dự án**: LemonChat (Group Chat & Messaging System)  
 > **Tài liệu tham chiếu**: [`docs/GROUP_CHAT_REVIEW_REMEDIATION_PLAN.md`](GROUP_CHAT_REVIEW_REMEDIATION_PLAN.md), [`review.md`](../review.md), [`docs/TODO_NEXT.md`](TODO_NEXT.md)  
-> **Trạng thái Baseline**: Đã hoàn thành 100% các hạng mục P0/P1 trước merge trên `lemon-backend` (`9601adb`) và `lemon-ui` (`a3a2e46`).  
+> **Trạng thái Baseline**: Đã hoàn thành 100% các hạng mục P0/P1/P2/P3 theo `review.md` và `review2.md` trên `lemon-backend` (`a5e1dd4`) và `lemon-ui` (`b7cdb79`).  
 > **Kết quả kiểm thử hiện tại**:
-> - Backend: **78/78 suites (929/929 unit tests pass)**, **8/8 suites (52/52 E2E tests pass)**, Typecheck 0 error, Lint 0 error, Migration `0024` đã áp dụng.
-> - Frontend: **26/26 files (183/183 component tests pass)**, Production build pass, Typecheck 0 error, Lint 0 error.
+> - Backend: **78/78 suites (936/936 unit tests pass)**, **8/8 suites (53/53 E2E tests pass - gồm cả multinode & Supabase PG)**, Typecheck 0 error, Lint 0 error, Migration `0025` đã áp dụng.
+> - Frontend: **26/26 files (183/183 component tests pass)**, Production build pass (`tsc -b && vite build` 0 error), Lint 0 error, Format 100% pass.
 
 ---
 
@@ -22,19 +22,19 @@ flowchart LR
 
 | Nhóm | Mã Task | Tên nhiệm vụ | Mức ưu tiên | Trạng thái | Phụ trách đề xuất |
 |---|---|---|:---:|:---:|:---:|
-| **1. Quyết định Sản phẩm** | `TASK-ARCH-01` | Chính sách truy cập Group Avatar (Public Capability vs Private Blob) | P1 | Cần thảo luận | TechLead / Product |
+| **1. Quyết định Sản phẩm** | `TASK-ARCH-01` | Chính sách truy cập Group Avatar (Private Stream/Blob) | P1 | **Đã hoàn thành (Review 2)** | TechLead / Backend / UI |
 | | `TASK-ARCH-02` | Idempotency Key khi hard-delete tài khoản Creator | P2 | Cần thảo luận | Backend / TechLead |
-| | `TASK-ARCH-03` | Mô hình quyền xem lịch sử khi Re-add thành viên nhiều lần | P2 | Đã có quy tắc / Backlog | Product |
+| | `TASK-ARCH-03` | Mô hình quyền xem lịch sử khi Re-add thành viên nhiều lần | P1 | **Đã hoàn thành (Review 2)** | Backend / TechLead |
 | | `TASK-ARCH-04` | Chuẩn hóa HTTP Status Code cho Replay Request (201 vs 200) | P3 | Cần quyết định | Backend Lead |
 | **2. Tối ưu Hiệu năng** | `TASK-PERF-01` | Script chạy `CREATE INDEX CONCURRENTLY` trên Production lớn | P2 | Sẵn sàng triển khai | DBA / DevOps |
 | | `TASK-PERF-02` | Profiling `EXPLAIN (ANALYZE, BUFFERS)` inbox hàng triệu tin nhắn | P2 | Chờ môi trường Staging | Backend |
 | | `TASK-PERF-03` | Throttling & Generation Counter cho Realtime Typing Indicator | P2 | Chờ triển khai | Backend / Realtime |
 | | `TASK-PERF-04` | Chuẩn hóa thứ tự khóa giao dịch (Transaction Lock Order) | P2 | Chờ triển khai | Backend |
 | **3. Hoàn thiện UI/UX** | `TASK-UI-01` | Hiển thị % tiến trình upload tệp đính kèm (`onUploadProgress`) | P2 | Chờ triển khai | Frontend |
-| | `TASK-UI-02` | Quản lý vòng đời & Tự động thu hồi Blob URL tập trung | P2 | Chờ triển khai | Frontend |
-| | `TASK-UI-03` | Lưu bền vững `clientRequestId` của Group Wizard trong `sessionStorage` | P2 | Chờ triển khai | Frontend |
+| | `TASK-UI-02` | Quản lý vòng đời & Tự động thu hồi Blob URL tập trung | P2 | **Đã hoàn thành (Review 2)** | Frontend |
+| | `TASK-UI-03` | Lưu bền vững nháp & request ID của Group Wizard trong `sessionStorage` | P2 | **Đã hoàn thành (Review 2)** | Frontend |
 | | `TASK-UI-04` | Rà soát hiển thị tên người gửi tin nhắn (Direct vs Group) | P3 | Chờ triển khai | Frontend |
-| | `TASK-UI-05` | Đồng bộ hóa đối xứng 100% key i18n VI/EN và phụ đề count | P3 | Chờ triển khai | Frontend |
+| | `TASK-UI-05` | Đồng bộ hóa đối xứng 100% key i18n VI/EN và fallback localized | P3 | **Đã hoàn thành (Review 2)** | Frontend |
 | **4. Tự động hóa CI/CD** | `TASK-TEST-01` | Thiết lập Browser E2E Automation với Playwright (Multi-tab realtime) | P2 | Chờ thiết lập | QA / Fullstack |
 | | `TASK-TEST-02` | Tích hợp pre-merge gate vào GitHub Actions CI | P1 | Sẵn sàng triển khai | DevOps / An |
 | **5. Tính năng Lộ trình** | `TASK-FEAT-01` | Tìm kiếm tin nhắn trong hội thoại (Message Search API + Scroll UI) | Feature | Kế hoạch chi tiết | An |
