@@ -243,6 +243,9 @@ Vì cuộc gọi đến có thể xảy ra ở bất kỳ màn hình nào, `Call
   - Gắn thẻ `<audio ref={remoteAudioRef} autoPlay />`.
   - Hiển thị Avatar kích thước lớn kèm hiệu ứng vòng sóng âm thanh khi đối phương đang nói.
 - **`CallControls.tsx`:**
+  - Bổ sung `hasMicError?: boolean` và `hasCameraError?: boolean`.
+  - Khi chưa được cấp quyền Mic hoặc Camera: Hiển thị **badge dấu chấm than (!)** màu vàng ở góc trên nút.
+  - Người dùng bấm vào nút có badge (!) để kích hoạt lại hộp thoại xin cấp quyền của trình duyệt bất cứ lúc nào.
   - Nút Mute Mic: Bật/tắt `audioTrack.enabled`, emit `call:media-state`.
   - Nút Tắt Camera: Bật/tắt `videoTrack.enabled`, emit `call:media-state`.
   - Nút Đổi Camera (trên thiết bị di động): Hỗ trợ chuyển đổi giữa camera trước và sau (`facingMode: 'user' | 'environment'`).
@@ -266,8 +269,7 @@ Vì cuộc gọi đến có thể xảy ra ở bất kỳ màn hình nào, `Call
 
 | Kịch bản | Cách Frontend xử lý |
 | :--- | :--- |
-| **Người dùng từ chối cấp quyền Mic/Cam** | Bắt lỗi `NotAllowedError` từ `getUserMedia`, hiển thị Toast thông báo yêu cầu bật quyền trong trình duyệt, tự động kết thúc cuộc gọi với reason `PERMISSION_DENIED`. |
-| **Không tìm thấy thiết bị phần cứng** | Bắt lỗi `NotFoundError` (máy không cắm mic/webcam), thông báo lỗi rõ ràng cho người dùng. |
+| **Người dùng từ chối cấp quyền hoặc máy không có Mic/Camera** | **TUYỆT ĐỐI KHÔNG ngắt cuộc gọi.** Cuộc gọi vẫn tiếp tục để người dùng có thể nghe hoặc xem video của đối phương. Nút Mic hoặc Camera trên `CallControls` sẽ hiển thị **badge dấu chấm than (!)** màu vàng. Người dùng có thể nhấn lại vào nút có badge bất cứ lúc nào để yêu cầu trình duyệt cấp quyền lại (`getUserMedia`). Khi người dùng đồng ý cấp quyền, track âm thanh/hình ảnh sẽ được đưa ngay vào `RTCPeerConnection` (`pc.addTrack`) và badge (!) tự động biến mất. |
 | **B không nghe máy (45s Ringing Timeout)** | Nhận socket `call:ended` (reason: `MISSED_TIMEOUT`), hiển thị Toast *"Người nhận không trả lời"*, tắt màn hình gọi. Phía A có guard timer 47s tự tắt phòng khi mạng chậm. |
 | **A hủy gọi trước khi B nghe máy** | B nhận socket `call:cancelled`, modal chuông tự tắt ngay lập tức, dừng tiếng chuông. |
 | **Đối phương rớt mạng tạm thời** | Nhận socket `call:user-disconnected`, hiển thị badge *"Đối phương đang kết nối lại..."* trên màn hình cuộc gọi. Nếu nhận `call:user-reconnected` trong 15s thì ẩn badge. Nếu quá 15s, nhận `call:ended` (`DISCONNECTED_TIMEOUT`) và đóng cuộc gọi. |
