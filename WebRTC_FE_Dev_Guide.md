@@ -1,42 +1,24 @@
-# HƯỚNG DẪN TRIỂN KHAI WEBRTC 1-1 VOICE & VIDEO CALL CHO FRONTEND
+# HƯỚNG DẪN TRIỂN KHAI FRONTEND CALL VỚI LIVEKIT SFU
 ## LemonChat Web Client (React 19 + TypeScript + Vite + TailwindCSS)
 
 ---
 
 ## 1. TỔNG QUAN KIẾN TRÚC & MỤC TIÊU
 
-Tài liệu này là đặc tả kỹ thuật và kế hoạch chi tiết để tích hợp tính năng **WebRTC 1-1 Voice & Video Call** vào Frontend của ứng dụng LemonChat (`E:/Project-Web-IT4409/FE`), kết nối với Backend Signalling Server đã hoàn thành.
+Tài liệu này là đặc tả kỹ thuật và hướng dẫn triển khai tính năng **Gọi Thoại (Voice Call) & Gọi Video (Video Call)** trên Frontend của ứng dụng LemonChat (`E:/Project-Web-IT4409/FE`), tích hợp với máy chủ **LiveKit SFU** và **LemonChat Backend Signalling Server**.
 
-### 1.1. Nguyên lý cốt lõi: Late-Offer Signalling Handshake
-Hệ thống tuân thủ nghiêm ngặt mô hình **Late-Offer Handshake**:
-- Khi **Caller (A)** khởi tạo cuộc gọi, A **CHƯA** tạo SDP Offer. A chỉ gọi API `POST /api/calls` để yêu cầu Server gửi tín hiệu đổ chuông `call:incoming` tới **Callee (B)**.
-- Khi **Callee (B)** bấm "Chấp nhận" (`POST /api/calls/:id/accept`), Server phát sự kiện `call:accepted` cho cả hai bên.
-- **Sau khi nhận `call:accepted`**, Caller (A) mới khởi tạo `RTCPeerConnection`, xin quyền Media (Camera/Mic), tạo **SDP Offer** và gửi lên Socket event `call:signal:offer`.
-- Callee (B) nhận `call:signal:offer`, thiết lập remote description, tạo **SDP Answer** và gửi lên `call:signal:answer`.
-- Hai bên trao đổi các **ICE Candidates** (`call:signal:ice-candidate`) và thiết lập kênh truyền P2P (hoặc thông qua TURN relay).
+### 1.1 Nguyên lý cốt lõi: Đàm phán Media qua SFU & Điều khiển Vòng đời qua Backend
+- **Không tự xử lý P2P:** Không sử dụng `RTCPeerConnection` thủ công, không tạo SDP Offer/Answer thủ công, không relay ICE Candidates qua Socket.IO.
+- **LiveKit Client SDK (`livekit-client`):** Đảm nhiệm việc đàm phán WebRTC trực tiếp với LiveKit SFU Server thông qua WebSocket riêng (`LIVEKIT_URL`), hỗ trợ tự động điều chỉnh bitrate thích ứng (Simulcast/Dynacast).
+- **Backend Signalling:** Chỉ đóng vai trò điều khiển vòng đời cuộc gọi (đổ chuông 45s, trạng thái bận, thông báo chấp nhận/từ chối/hủy/kết thúc) và cấp phát JWT `AccessToken` để truy cập phòng LiveKit.
 
-### 1.2. Mô hình phân tầng Frontend
-```
-src/
-├── features/call/
-│   ├── api/
-│   │   └── call.api.ts              # REST API client (/api/calls/*)
-│   ├── types/
-│   │   └── call.types.ts            # Data transfer objects & WebRTC types
-│   ├── hooks/
-│   │   └── useWebRTCCall.ts         # Hook quản lý RTCPeerConnection & MediaStream
-│   ├── context/
-│   │   └── CallContext.tsx          # Global call state provider (Incoming call, active session)
-│   ├── components/
-│   │   ├── IncomingCallModal.tsx    # Modal hiển thị chuông cuộc gọi đến toàn cục
-│   │   ├── CallsView.tsx            # Màn hình danh sách lịch sử cuộc gọi
-│   │   └── CallScreen/              # Giao diện đàm thoại (Video/Voice Stage, Controls, PiP)
-│   │       ├── CallScreen.tsx
-│   │       ├── CallControls.tsx
-│   │       ├── VideoCallStage.tsx
-│   │       ├── VoiceCallStage.tsx
-│   │       └── CallWindowProvider.tsx
-```
+### 1.2 Yêu cầu đặc biệt: Xử lý quyền thiết bị mềm mại (Soft Permission Fallback)
+> [!IMPORTANT]
+> **Quy tắc quan trọng nhất về trải nghiệm người dùng:**  
+> Nếu người dùng từ chối quyền truy cập Microphone hoặc Camera trên trình duyệt (hoặc thiết bị phần cứng không tồn tại):
+> 1. **TUYỆT ĐỐI KHÔNG ngắt hay kết thúc cuộc gọi.** Cuộc gọi vẫn tiếp tục bình thường để người dùng có thể nghe và xem hình ảnh của đối phương.
+> 2. Hiển thị một **badge tròn nhỏ màu vàng/hổ phách chứa ký tự `!`** tại góc trên bên phải nút Mic hoặc Camera trong `CallControls`.
+> 3. Khi người dùng nhấp vào nút có badge `!`, ứng dụng sẽ yêu cầu xin lại quyền từ trình duyệt (`room.localParticipant.setMicrophoneEnabled(true)` hoặc `setCameraEnabled(true)`). Khi người dùng cấp quyền, LiveKit sẽ tự động xuất bản (publish) track lên SFU ngay lập tức mà không cần tải lại trang hay ngắt kết nối cuộc gọi.
 
 ---
 
@@ -45,273 +27,391 @@ src/
 ```mermaid
 sequenceDiagram
     autonumber
-    actor A as Caller (A)
-    participant S as Server (NestJS + Redis)
-    actor B as Callee (B)
+    actor A as Người gọi (Caller)
+    participant FE_A as Frontend Caller
+    participant BE as LemonChat Backend
+    participant FE_B as Frontend Callee
+    actor B as Người nhận (Callee)
+    participant LK as LiveKit SFU Server
 
-    Note over A,B: 1. Khởi tạo cuộc gọi (Initiate Call)
-    A->>S: POST /api/calls { conversationId, media }
-    S-->>A: 201 Created { callId, iceServers, ... }
-    Note over A: Mở CallScreen (phase: 'ringing')<br/>Phát tiếng tút tút chờ bắt máy
-    S-)B: Socket emit "call:incoming" { callId, caller, media }
-    Note over B: Mở IncomingCallModal + Đổ chuông
+    %% Khởi tạo
+    A->>FE_A: Nhấn biểu tượng Gọi Video/Thoại
+    FE_A->>BE: POST /api/calls { conversationId, media }
+    BE-->>FE_A: 201 Created { callId, livekit: { serverUrl, room, token } }
+    BE-->>FE_B: Socket.IO emit "call:incoming" { callId, caller, media }
+    Note over FE_A: Hiển thị màn hình Gọi đi (Phát âm thanh tút tút...)
+    Note over FE_B: Hiển thị Modal Cuộc gọi đến (Phát nhạc chuông reo...)
 
-    Note over A,B: 2. Callee chấp nhận (Accept Call)
-    B->>S: POST /api/calls/:id/accept
-    S-->>B: 200 OK { callId, iceServers, ... }
-    S-)A: Socket emit "call:accepted" { callId, acceptedBy }
-    Note over B: Mở CallScreen (phase: 'active')
+    %% Chấp nhận
+    B->>FE_B: Bấm nút "Chấp nhận"
+    FE_B->>BE: POST /api/calls/:id/accept
+    BE-->>FE_B: 200 OK { callId, livekit: { serverUrl, room, token } }
+    BE-->>FE_A: Socket.IO emit "call:accepted" { callId, acceptedBy }
 
-    Note over A,B: 3. Khởi tạo WebRTC & Late-Offer
-    Note over A: Nhận call:accepted -> Xin quyền Mic/Cam<br/>Tạo RTCPeerConnection<br/>Tạo SDP Offer
-    A-)S: Socket emit "call:signal:offer" { callId, sdp }
-    S-)B: Relay "call:signal:offer" { callId, sdp, senderId }
-    Note over B: Set Remote Description<br/>Xin quyền Mic/Cam<br/>Tạo SDP Answer
-    B-)S: Socket emit "call:signal:answer" { callId, sdp }
-    S-)A: Relay "call:signal:answer" { callId, sdp, senderId }
+    %% Kết nối LiveKit
+    par Kết nối vào phòng LiveKit SFU
+        FE_A->>LK: room.connect(serverUrl, tokenCaller)
+        FE_B->>LK: room.connect(serverUrl, tokenCallee)
+    end
 
-    Note over A,B: 4. Trao đổi Trickle ICE Candidates
-    A-)S: Socket emit "call:signal:ice-candidate"
-    S-)B: Relay ICE Candidate
-    B-)S: Socket emit "call:signal:ice-candidate"
-    S-)A: Relay ICE Candidate
+    %% Xuất bản Media
+    par Bật Mic/Cam & Publish
+        FE_A->>LK: Publish Audio & Video của A
+        FE_B->>LK: Publish Audio & Video của B
+    end
 
-    Note over A,B: 5. Kết nối P2P thành công & Đàm thoại
-    A<<-->>B: Trực tiếp truyền nhận Audio/Video Stream
+    %% Nhận Media
+    par Subscribe Remote Media
+        LK-->>FE_B: TrackSubscribed (A) -> track.attach(videoRef)
+        LK-->>FE_A: TrackSubscribed (B) -> track.attach(videoRef)
+    end
+    Note over FE_A,FE_B: Hai bên đàm thoại qua LiveKit SFU
 
-    Note over A,B: 6. Kết thúc cuộc gọi
-    A->>S: POST /api/calls/:id/end { reason: "NORMAL" }
-    S-)A: Socket emit "call:ended"
-    S-)B: Socket emit "call:ended"
-    Note over A,B: Dừng MediaTracks, đóng RTCPeerConnection, đóng màn hình call
+    %% Kết thúc
+    A->>FE_A: Bấm nút "Cúp máy"
+    FE_A->>BE: POST /api/calls/:id/end
+    BE-->>FE_A: Socket.IO emit "call:ended"
+    BE-->>FE_B: Socket.IO emit "call:ended"
+    par Ngắt kết nối LiveKit
+        FE_A->>LK: room.disconnect()
+        FE_B->>LK: room.disconnect()
+    end
 ```
 
 ---
 
-## 3. CÁC ĐIỂM ĐẦU CUỐI API & SỰ KIỆN SOCKET
+## 3. CẤU TRÚC MÃ NGUỒN FRONTEND (`src/features/call`)
 
-### 3.1. REST API Client (`src/features/call/api/call.api.ts`)
-
-| Phương thức | Đường dẫn | Tham số / Body | Ý nghĩa |
-| :--- | :--- | :--- | :--- |
-| `POST` | `/calls` | `{ conversationId: string, media: "VOICE" \| "VIDEO" }` | Bắt đầu gọi đi. Trả về thông tin cuộc gọi và danh sách `iceServers`. |
-| `GET` | `/calls/ice-servers` | Không có | Lấy danh sách STUN/TURN credentials. |
-| `GET` | `/calls/active` | Không có | Lấy thông tin cuộc gọi đang hoạt động của người dùng (nếu có). |
-| `GET` | `/calls/:id` | Path param `:id` | Lấy chi tiết cuộc gọi. |
-| `POST` | `/calls/:id/accept` | Path param `:id` | Callee chấp nhận cuộc gọi. Trả về `iceServers`. |
-| `POST` | `/calls/:id/reject` | `{ reason?: string }` | Callee từ chối cuộc gọi. |
-| `POST` | `/calls/:id/cancel` | Path param `:id` | Caller hủy cuộc gọi trước khi đối phương bắt máy. |
-| `POST` | `/calls/:id/end` | `{ reason?: string }` | Kết thúc cuộc gọi đang diễn ra. |
-| `GET` | `/calls` | Query `conversationId?`, `limit?`, `cursor?` | Lấy lịch sử danh sách cuộc gọi phân trang. |
-
-### 3.2. Socket.IO Events
-
-#### Sự kiện Client gửi lên Server:
-- `call:signal:offer`: `{ callId: string, sdp: RTCSessionDescriptionInit }`
-- `call:signal:answer`: `{ callId: string, sdp: RTCSessionDescriptionInit }`
-- `call:signal:ice-candidate`: `{ callId: string, candidate: RTCIceCandidateInit }`
-- `call:media-state`: `{ callId: string, isMuted?: boolean, isVideoOff?: boolean }`
-
-#### Sự kiện Client nhận từ Server:
-- `call:incoming`: `{ callId, conversationId, caller, media }` $\rightarrow$ Kích hoạt modal đổ chuông.
-- `call:accepted`: `{ callId, acceptedBy, answeredAt }` $\rightarrow$ Caller bắt đầu tạo Offer.
-- `call:rejected`: `{ callId, rejectedBy, reason }` $\rightarrow$ Đóng màn hình, báo người nhận từ chối.
-- `call:cancelled`: `{ callId, cancelledBy }` $\rightarrow$ Tắt modal đổ chuông trên máy Callee.
-- `call:missed`: `{ callId, callerId, media, reason }` $\rightarrow$ Đóng modal chuông, ghi nhận cuộc gọi nhỡ.
-- `call:ended`: `{ callId, endedBy?, reason, durationSecs }` $\rightarrow$ Đóng cuộc gọi, dọn dẹp WebRTC.
-- `call:user-disconnected`: `{ callId, userId }` $\rightarrow$ Hiển thị cảnh báo *"Đối phương đang kết nối lại..."*.
-- `call:user-reconnected`: `{ callId, userId }` $\rightarrow$ Ẩn cảnh báo kết nối lại, tiếp tục đàm thoại.
-- `call:signal:offer`, `call:signal:answer`, `call:signal:ice-candidate`, `call:media-state`.
-
----
-
-## 4. CHI TIẾT CÁC THÀNH PHẦN TRIỂN KHAI FRONTEND
-
-### 4.1. Định nghĩa Types (`src/features/call/types/call.types.ts`)
-```typescript
-export type CallMedia = 'VOICE' | 'VIDEO'
-
-export type CallStatus =
-  | 'INITIATED'
-  | 'RINGING'
-  | 'ACCEPTED'
-  | 'REJECTED'
-  | 'MISSED'
-  | 'CANCELLED'
-  | 'COMPLETED'
-  | 'FAILED'
-
-export interface RTCIceServer {
-  urls: string | string[]
-  username?: string
-  credential?: string
-}
-
-export interface CallParticipant {
-  id: string
-  username: string
-  fullName: string
-  avatarUrl: string | null
-}
-
-export interface CallResponse {
-  id: string
-  conversationId: string
-  callerId: string
-  calleeId: string
-  media: CallMedia
-  status: CallStatus
-  startedAt: string
-  answeredAt: string | null
-  endedAt: string | null
-  endReason: string | null
-  durationSecs: number
-  caller?: CallParticipant
-  callee?: CallParticipant
-}
-
-export interface InitiateCallResponse extends CallResponse {
-  iceServers: RTCIceServer[]
-}
-
-export interface AcceptCallResponse extends CallResponse {
-  iceServers: RTCIceServer[]
-}
-
-export interface CallIncomingPayload {
-  callId: string
-  conversationId: string
-  caller: CallParticipant
-  media: CallMedia
-}
+```
+src/features/call/
+├── api/
+│   └── call.api.ts              # REST API calls (/api/calls/*)
+├── types/
+│   └── call.types.ts            # Data contracts & LiveKit types
+├── hooks/
+│   └── useLiveKitCall.ts        # Hook quản lý kết nối LiveKit, tracks, và Soft Permissions
+├── context/
+│   └── CallContext.tsx          # Global Call Provider (Incoming call, active session, ringtone)
+├── components/
+│   ├── IncomingCallModal.tsx    # Pop-up toàn cục khi có cuộc gọi đến
+│   ├── CallsView.tsx            # Danh sách lịch sử cuộc gọi
+│   └── CallScreen/              # Giao diện đàm thoại
+│       ├── CallScreen.tsx       # Màn hình chính (chuyển đổi ringing -> active -> ended)
+│       ├── CallControls.tsx     # Bảng điều khiển (Mic, Cam có badge '!', Speaker, Cúp máy)
+│       ├── VideoCallStage.tsx   # Hiển thị video remote và video preview local
+│       ├── VoiceCallStage.tsx   # Hiển thị âm thanh và hiệu ứng pulse phát biểu
+│       └── CallWindowProvider.tsx # Hỗ trợ Picture-in-Picture (PiP)
 ```
 
 ---
 
-### 4.2. Hook cốt lõi: `useWebRTCCall.ts`
-Hook này chịu trách nhiệm:
-1. Yêu cầu quyền Micro / Camera qua `navigator.mediaDevices.getUserMedia`.
-2. Khởi tạo đối tượng `RTCPeerConnection` với cấu hình ICE Servers.
-3. Quản lý trạng thái Local Stream và Remote Stream.
-4. Lắng nghe và emit các gói tin signalling qua `getChatSocket()`.
-5. Đổi trạng thái Microphone / Camera (Mute / Unmute, Tắt / Bật Cam) và đồng bộ qua `call:media-state`.
+## 4. CHI TIẾT TRIỂN KHAI CÁC MODULE
 
-```typescript
-// Sơ đồ luồng logic bên trong hook:
-// 1. acquireMedia() -> set localStream
-// 2. new RTCPeerConnection({ iceServers })
-// 3. localStream.getTracks().forEach(track => pc.addTrack(track, localStream))
-// 4. pc.ontrack = (event) => set remoteStream(event.streams[0])
-// 5. pc.onicecandidate = (event) => emit "call:signal:ice-candidate"
-// 6. socket.on("call:signal:offer") / socket.on("call:signal:answer")
-```
-
----
-
-### 4.3. Quản lý trạng thái toàn cục: `CallContext.tsx`
-Vì cuộc gọi đến có thể xảy ra ở bất kỳ màn hình nào, `CallContext` được đặt tại root của ứng dụng:
-- Khởi tạo lắng nghe Socket events ngay khi người dùng đăng nhập thành công:
-  - `call:incoming`: Lưu `incomingCall` vào state, phát âm thanh chuông gọi.
-  - `call:cancelled`, `call:missed`: Hủy `incomingCall`, dừng chuông.
-- Cung cấp các hành vi cho toàn ứng dụng:
-  - `startCall(conversationId: string, media: CallMedia)`: Bắt đầu gọi đi.
-  - `acceptCall()`: Chấp nhận cuộc gọi đến.
-  - `rejectCall()`: Từ chối cuộc gọi đến.
-  - `endCall()`: Kết thúc cuộc gọi hiện tại.
-
----
-
-### 4.4. Modal cuộc gọi đến: `IncomingCallModal.tsx`
-- Hiển thị trên cùng (Z-Index cao nhất) khi `incomingCall !== null`.
-- Giao diện:
-  - Avatar người gọi (có hiệu ứng pulse gợn sóng).
-  - Tên người gọi và text: *"Cuộc gọi thoại đến..."* hoặc *"Cuộc gọi video đến..."*.
-  - Nút **Từ chối** (màu đỏ, icon gác máy).
-  - Nút **Trả lời** (màu xanh lá cây, icon nghe máy).
-- Quản lý âm thanh: Tự động chạy audio loop chuông reo, tự ngắt khi ấn nút hoặc khi có sự kiện hủy.
-
----
-
-### 4.5. Nâng cấp `CallScreen.tsx` & Các Stage hiển thị
-- **Loại bỏ hoàn toàn code giả định:** Xóa bỏ `window.setTimeout(() => updateCall({ state: 'active' }), 3200)`.
-- **`VideoCallStage.tsx`:**
-  - Remote Video: Gắn `remoteStream` vào `<video ref={remoteVideoRef} autoPlay playsInline />` trải rộng toàn màn hình.
-  - Local Video: Gắn `localStream` vào khung video nhỏ (PiP) ở góc dưới màn hình.
-  - Khi đối phương tắt cam: Tự động chuyển về hiển thị Avatar có hiệu ứng gradient.
-  - Khi đối phương rớt mạng: Hiển thị thanh thông báo nổi *"Đang kết nối lại..."*.
-- **`VoiceCallStage.tsx`:**
-  - Gắn thẻ `<audio ref={remoteAudioRef} autoPlay />`.
-  - Hiển thị Avatar kích thước lớn kèm hiệu ứng vòng sóng âm thanh khi đối phương đang nói.
-- **`CallControls.tsx`:**
-  - Bổ sung `hasMicError?: boolean` và `hasCameraError?: boolean`.
-  - Khi chưa được cấp quyền Mic hoặc Camera: Hiển thị **badge dấu chấm than (!)** màu vàng ở góc trên nút.
-  - Người dùng bấm vào nút có badge (!) để kích hoạt lại hộp thoại xin cấp quyền của trình duyệt bất cứ lúc nào.
-  - Nút Mute Mic: Bật/tắt `audioTrack.enabled`, emit `call:media-state`.
-  - Nút Tắt Camera: Bật/tắt `videoTrack.enabled`, emit `call:media-state`.
-  - Nút Đổi Camera (trên thiết bị di động): Hỗ trợ chuyển đổi giữa camera trước và sau (`facingMode: 'user' | 'environment'`).
-  - Nút Kết thúc: Gọi API `POST /api/calls/:id/end`.
-
----
-
-### 4.6. Thay thế Mock Data trong `CallsView.tsx`
-- Thay thế `MOCK_CALLS` bằng React Query `useQuery`:
-  ```typescript
-  const { data: calls, isLoading } = useQuery({
-    queryKey: ['calls', 'history'],
-    queryFn: () => callApi.listCalls({ limit: 20 }),
-  });
-  ```
-- Hiển thị danh sách lịch sử cuộc gọi với icon hướng gọi (Đi, Đến, Nhỡ), thời lượng đàm thoại (`durationSecs`), và nút gọi lại nhanh.
-
----
-
-## 5. XỬ LÝ CÁC TÌNH HUỐNG BIÊN & SỰ CỐ MẠNG (EDGE CASES)
-
-| Kịch bản | Cách Frontend xử lý |
-| :--- | :--- |
-| **Người dùng từ chối cấp quyền hoặc máy không có Mic/Camera** | **TUYỆT ĐỐI KHÔNG ngắt cuộc gọi.** Cuộc gọi vẫn tiếp tục để người dùng có thể nghe hoặc xem video của đối phương. Nút Mic hoặc Camera trên `CallControls` sẽ hiển thị **badge dấu chấm than (!)** màu vàng. Người dùng có thể nhấn lại vào nút có badge bất cứ lúc nào để yêu cầu trình duyệt cấp quyền lại (`getUserMedia`). Khi người dùng đồng ý cấp quyền, track âm thanh/hình ảnh sẽ được đưa ngay vào `RTCPeerConnection` (`pc.addTrack`) và badge (!) tự động biến mất. |
-| **B không nghe máy (45s Ringing Timeout)** | Nhận socket `call:ended` (reason: `MISSED_TIMEOUT`), hiển thị Toast *"Người nhận không trả lời"*, tắt màn hình gọi. Phía A có guard timer 47s tự tắt phòng khi mạng chậm. |
-| **A hủy gọi trước khi B nghe máy** | B nhận socket `call:cancelled`, modal chuông tự tắt ngay lập tức, dừng tiếng chuông. |
-| **Đối phương rớt mạng tạm thời** | Nhận socket `call:user-disconnected`, hiển thị badge *"Đối phương đang kết nối lại..."* trên màn hình cuộc gọi. Nếu nhận `call:user-reconnected` trong 15s thì ẩn badge. Nếu quá 15s, nhận `call:ended` (`DISCONNECTED_TIMEOUT`) và đóng cuộc gọi. |
-| **P2P ICE Connection chuyển sang Failed** | Lắng nghe `pc.oniceconnectionstatechange === 'failed'`, tự động thử `pc.restartIce()`; nếu không thành công sau 5 giây thì chủ động gọi `endCall` để giải phóng. |
-
----
-
-## 6. KẾ HOẠCH KIỂM THỬ & XÁC MINH (VERIFICATION PLAN)
-
-### 6.1. Kiểm thử Tự động (Lint, Typecheck & Test)
-Tại thư mục `E:/Project-Web-IT4409/FE`:
+### 4.1 Cài đặt Package
 ```bash
-# 1. Kiểm tra toàn bộ kiểu TypeScript
-npm run build # hoặc tsc -b
-
-# 2. Chạy linter
-npm run lint
-
-# 3. Chạy unit test suite
-npm run test
+npm install livekit-client
 ```
 
-### 6.2. Kiểm thử Thực nghiệm Thực tế (Manual E2E Testing)
-1. **Chuẩn bị môi trường:**
-   - Chạy Backend: `npm run start:dev` (cổng 3000).
-   - Chạy Frontend: `npm run dev` (cổng 5173).
-   - Mở 2 cửa sổ trình duyệt:
-     - Cửa sổ 1 (Chrome): Đăng nhập tài khoản User A.
-     - Cửa sổ 2 (Edge hoặc Tab Ẩn danh): Đăng nhập tài khoản User B.
-2. **Kịch bản Happy Path (Video Call):**
-   - User A vào cuộc trò chuyện với B, bấm nút "Gọi Video".
-   - Kiểm tra User B: Ngay lập tức hiện `IncomingCallModal` kèm chuông reo.
-   - User B bấm "Chấp nhận":
-     - Cả 2 màn hình chuyển sang `CallScreen` (giai đoạn `active`).
-     - Camera của A và B hiển thị trực tiếp (A nhìn thấy B toàn màn hình và thấy chính mình ở góc nhỏ, và ngược lại).
-     - Đồng hồ đếm thời gian cuộc gọi bắt đầu chạy.
-   - Thử nghiệm tắt Mic / tắt Cam: Kiểm tra icon trạng thái cập nhật đúng ở đầu bên kia.
-   - Một bên bấm "Kết thúc": Cả 2 bên tắt màn hình, camera tắt đèn báo, chuyển về giao diện chat.
-3. **Kịch bản Cuộc gọi nhỡ (Timeout 45s):**
-   - A gọi B, B không tương tác gì.
-   - Sau đúng 45 giây: Cuộc gọi tự kết thúc trên máy A, máy B tắt chuông và lưu vào danh sách cuộc gọi nhỡ.
-4. **Kịch bản Ngắt kết nối mạng:**
-   - Khi đang đàm thoại, tắt kết nối mạng ở máy B.
-   - Kiểm tra máy A: Hiện thông báo *"Đối phương đang kết nối lại..."*.
-   - Bật lại mạng trong 10 giây: Cuộc gọi tự phục hồi thành công.
+### 4.2 Tầng API Client (`src/features/call/api/call.api.ts`)
+```ts
+import { apiClient } from '@/infrastructure/api/client';
+import type {
+  AcceptCallResponse,
+  CallResponse,
+  CallTokenResponse,
+  InitiateCallResponse,
+} from '../types/call.types';
+
+export const callApi = {
+  initiateCall: async (data: { conversationId: string; media: 'VOICE' | 'VIDEO' }) => {
+    const res = await apiClient.post<{ data: InitiateCallResponse }>('/calls', data);
+    return res.data.data;
+  },
+
+  acceptCall: async (callId: string) => {
+    const res = await apiClient.post<{ data: AcceptCallResponse }>(`/calls/${callId}/accept`);
+    return res.data.data;
+  },
+
+  getCallToken: async (callId: string) => {
+    const res = await apiClient.get<{ data: CallTokenResponse }>(`/calls/${callId}/token`);
+    return res.data.data;
+  },
+
+  rejectCall: async (callId: string, reason?: string) => {
+    const res = await apiClient.post<{ data: CallResponse }>(`/calls/${callId}/reject`, { reason });
+    return res.data.data;
+  },
+
+  cancelCall: async (callId: string) => {
+    const res = await apiClient.post<{ data: CallResponse }>(`/calls/${callId}/cancel`);
+    return res.data.data;
+  },
+
+  endCall: async (callId: string, reason?: string) => {
+    const res = await apiClient.post<{ data: CallResponse }>(`/calls/${callId}/end`, { reason });
+    return res.data.data;
+  },
+
+  getActiveCall: async () => {
+    const res = await apiClient.get<{ data: { call: CallResponse | null } }>('/calls/active');
+    return res.data.data.call;
+  },
+
+  getCallById: async (callId: string) => {
+    const res = await apiClient.get<{ data: CallResponse }>(`/calls/${callId}`);
+    return res.data.data;
+  },
+
+  listCalls: async (params?: { cursor?: string; limit?: number; conversationId?: string }) => {
+    const res = await apiClient.get<{ data: { items: CallResponse[]; hasMore: boolean } }>('/calls', { params });
+    return res.data.data;
+  },
+};
+```
+
+---
+
+### 4.3 Hook Điều khiển Media (`useLiveKitCall.ts`)
+Hook này quản lý kết nối LiveKit và thực thi **Soft Permission Fallback**:
+
+```ts
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { Room, RoomEvent, Track, type RemoteTrack, type LocalTrack } from 'livekit-client';
+
+export function useLiveKitCall() {
+  const roomRef = useRef<Room | null>(null);
+
+  const [remoteVideoTrack, setRemoteVideoTrack] = useState<RemoteTrack | null>(null);
+  const [remoteAudioTrack, setRemoteAudioTrack] = useState<RemoteTrack | null>(null);
+  const [localVideoTrack, setLocalVideoTrack] = useState<LocalTrack | null>(null);
+
+  const [isMuted, setIsMuted] = useState(false);
+  const [isCameraOff, setIsCameraOff] = useState(false);
+  const [hasMicError, setHasMicError] = useState(false);
+  const [hasCameraError, setHasCameraError] = useState(false);
+  const [isPeerSpeaking, setIsPeerSpeaking] = useState(false);
+  const [isReconnecting, setIsReconnecting] = useState(false);
+
+  // Khởi tạo Room
+  const getRoom = useCallback(() => {
+    if (!roomRef.current) {
+      const room = new Room({
+        adaptiveStream: true,
+        dynacast: true,
+      });
+
+      room.on(RoomEvent.TrackSubscribed, (track) => {
+        if (track.kind === Track.Kind.Video) setRemoteVideoTrack(track);
+        if (track.kind === Track.Kind.Audio) setRemoteAudioTrack(track);
+      });
+
+      room.on(RoomEvent.TrackUnsubscribed, (track) => {
+        if (track.kind === Track.Kind.Video) setRemoteVideoTrack(null);
+        if (track.kind === Track.Kind.Audio) setRemoteAudioTrack(null);
+      });
+
+      room.on(RoomEvent.ActiveSpeakersChanged, (speakers) => {
+        const peerSpeaking = speakers.some((s) => !s.isLocal);
+        setIsPeerSpeaking(peerSpeaking);
+      });
+
+      room.on(RoomEvent.Reconnecting, () => setIsReconnecting(true));
+      room.on(RoomEvent.Reconnected, () => setIsReconnecting(false));
+
+      roomRef.current = room;
+    }
+    return roomRef.current;
+  }, []);
+
+  const connect = useCallback(async (serverUrl: string, token: string, media: 'VOICE' | 'VIDEO') => {
+    const room = getRoom();
+    await room.connect(serverUrl, token);
+
+    // Kích hoạt Mic với cơ chế Soft Fallback
+    try {
+      await room.localParticipant.setMicrophoneEnabled(true);
+      setHasMicError(false);
+      setIsMuted(false);
+    } catch {
+      setHasMicError(true);
+      setIsMuted(true);
+      // KHÔNG kết thúc cuộc gọi!
+    }
+
+    // Kích hoạt Camera nếu là cuộc gọi Video
+    if (media === 'VIDEO') {
+      try {
+        await room.localParticipant.setCameraEnabled(true);
+        setHasCameraError(false);
+        setIsCameraOff(false);
+        const camTrack = room.localParticipant.getTrackPublication(Track.Source.Camera)?.track;
+        if (camTrack) setLocalVideoTrack(camTrack);
+      } catch {
+        setHasCameraError(true);
+        setIsCameraOff(true);
+        // KHÔNG kết thúc cuộc gọi!
+      }
+    }
+  }, [getRoom]);
+
+  // Xử lý bật/tắt Mic & retry xin quyền
+  const toggleMicrophone = useCallback(async () => {
+    const room = roomRef.current;
+    if (!room) return;
+
+    if (hasMicError) {
+      try {
+        await room.localParticipant.setMicrophoneEnabled(true);
+        setHasMicError(false);
+        setIsMuted(false);
+      } catch {
+        setHasMicError(true);
+      }
+      return;
+    }
+
+    const nextState = !isMuted;
+    await room.localParticipant.setMicrophoneEnabled(!nextState);
+    setIsMuted(nextState);
+  }, [hasMicError, isMuted]);
+
+  // Xử lý bật/tắt Camera & retry xin quyền
+  const toggleCamera = useCallback(async () => {
+    const room = roomRef.current;
+    if (!room) return;
+
+    if (hasCameraError) {
+      try {
+        await room.localParticipant.setCameraEnabled(true);
+        setHasCameraError(false);
+        setIsCameraOff(false);
+        const camTrack = room.localParticipant.getTrackPublication(Track.Source.Camera)?.track;
+        if (camTrack) setLocalVideoTrack(camTrack);
+      } catch {
+        setHasCameraError(true);
+      }
+      return;
+    }
+
+    const nextState = !isCameraOff;
+    await room.localParticipant.setCameraEnabled(!nextState);
+    setIsCameraOff(nextState);
+  }, [hasCameraError, isCameraOff]);
+
+  const disconnect = useCallback(() => {
+    if (roomRef.current) {
+      roomRef.current.disconnect();
+      roomRef.current = null;
+    }
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (roomRef.current) {
+        roomRef.current.disconnect();
+      }
+    };
+  }, []);
+
+  return {
+    remoteVideoTrack,
+    remoteAudioTrack,
+    localVideoTrack,
+    isMuted,
+    isCameraOff,
+    hasMicError,
+    hasCameraError,
+    isPeerSpeaking,
+    isReconnecting,
+    connect,
+    toggleMicrophone,
+    toggleCamera,
+    disconnect,
+  };
+}
+```
+
+---
+
+### 4.4 Badge Dấu Chấm Than '!' trên `CallControls.tsx`
+Trong `CallControls.tsx`:
+```tsx
+interface CallControlsProps {
+  // ... props hiện tại
+  hasMicError?: boolean;
+  hasCameraError?: boolean;
+}
+```
+Tại nút Mic và Camera:
+```tsx
+<span className="relative grid place-items-center">
+  {/* Nút Mic */}
+  <button onClick={onToggleMic} className={cn(...) /* nút */}>
+    {isMuted ? <MicOff /> : <Mic />}
+  </button>
+
+  {/* Badge cảnh báo lỗi quyền */}
+  {hasMicError && (
+    <span
+      className="absolute -top-1 -right-1 flex size-5 items-center justify-center rounded-full bg-amber-500 text-[11px] font-bold text-slate-950 shadow-md ring-2 ring-slate-900"
+      title="Microphone chưa được cấp quyền. Bấm để thử lại"
+    >
+      !
+    </span>
+  )}
+</span>
+```
+
+---
+
+### 4.5 Hiển thị Video & Audio trên Stage
+- **Trong `VideoCallStage.tsx`:**
+  ```tsx
+  const remoteVideoRef = useRef<HTMLVideoElement>(null);
+  const localVideoRef = useRef<HTMLVideoElement>(null);
+
+  useEffect(() => {
+    if (remoteVideoTrack && remoteVideoRef.current) {
+      remoteVideoTrack.attach(remoteVideoRef.current);
+      return () => { remoteVideoTrack.detach(); };
+    }
+  }, [remoteVideoTrack]);
+
+  useEffect(() => {
+    if (localVideoTrack && localVideoRef.current) {
+      localVideoTrack.attach(localVideoRef.current);
+      return () => { localVideoTrack.detach(); };
+    }
+  }, [localVideoTrack]);
+  ```
+
+- **Trong `VoiceCallStage.tsx`:**
+  ```tsx
+  const remoteAudioRef = useRef<HTMLAudioElement>(null);
+
+  useEffect(() => {
+    if (remoteAudioTrack && remoteAudioRef.current) {
+      remoteAudioTrack.attach(remoteAudioRef.current);
+      return () => { remoteAudioTrack.detach(); };
+    }
+  }, [remoteAudioTrack]);
+  ```
+
+---
+
+## 5. KẾ HOẠCH KIỂM THỬ FRONTEND (VERIFICATION PLAN)
+
+1. **Kiểm tra biên dịch Typecheck:**
+   ```bash
+   npm run build
+   ```
+2. **Kiểm tra Lint:**
+   ```bash
+   npm run lint
+   ```
+3. **Kiểm tra Luồng Nghiệp vụ Trực tiếp:**
+   - Người gọi bấm Gọi Video -> Người nhận nhận chuông kèm `IncomingCallModal`.
+   - Bấm Chấp nhận -> Kết nối thành công tới LiveKit SFU, cả 2 bên nhìn thấy hình ảnh và nghe tiếng nhau.
+   - Thử chặn quyền Mic hoặc Cam -> Xác nhận cuộc gọi **không bị ngắt**, badge `!` màu vàng hiển thị, bấm vào nút cho phép cấp quyền lại và xuất bản luồng media bình thường.
+   - Bấm cúp máy -> Cuộc gọi kết thúc, đóng phòng và ngắt kết nối LiveKit.
